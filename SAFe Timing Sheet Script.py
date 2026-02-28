@@ -27,6 +27,8 @@ from openpyxl.styles import PatternFill
 
 # ---------- regex ----------
 ACTIVITY_PREFIX = re.compile(r'^\s*(activity|discussion|video|action\s*plan)\b', re.I)
+PI_PLANNING_DECK = re.compile(r'leading\s+safe|safe\s+scrum\s+master|implementing\s+safe', re.I)
+PI_PLANNING_SLIDE = re.compile(r'pi\s+planning', re.I)
 SUBHEADER_RE = re.compile(r'^\s*\d+\.\d+\b(?!\.)')
 DUR_PATTERNS = [
     (re.compile(r'(\d{1,3})\s*-\s*(\d{1,3})\s*m(?:in(?:s|utes)?)?\b', re.I),
@@ -142,12 +144,16 @@ def parse_deck(path: Path, deck_label: str) -> List[Tuple[str, int, int, str]]:
         if m:
             intro_label = f"{int(m.group(1))}.0 {deck_clean_no_lead}"
 
+    is_pi_deck = bool(PI_PLANNING_DECK.search(deck_label))
+
     def sum_activity(start: int, end: int) -> int:
         total = 0
         for i in range(start, end):
             if is_activity_slide(titles[i]):
                 mins = extract_minutes(combined[i])
                 if mins is not None:
+                    if is_pi_deck and mins == 50 and PI_PLANNING_SLIDE.search(combined[i]):
+                        mins = 30
                     total += mins
         return total
 
