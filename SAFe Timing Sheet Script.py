@@ -26,7 +26,7 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
 # ---------- regex ----------
-ACTIVITY_PREFIX = re.compile(r'^\s*(activity|discussion|video|action\s*plan)\b', re.I)
+ACTIVITY_PREFIX = re.compile(r'^\s*(activity|discussion|action\s*plan)\b', re.I)
 PI_PLANNING_DECK = re.compile(r'leading\s+safe|safe\s+scrum\s+master|implementing\s+safe', re.I)
 PI_PLANNING_SLIDE = re.compile(r'pi\s+planning', re.I)
 SUBHEADER_RE = re.compile(r'^\s*\d+\.\d+\b(?!\.)')
