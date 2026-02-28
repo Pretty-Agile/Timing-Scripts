@@ -18,11 +18,11 @@ NEW:
 import argparse, re, os, sys, platform, time
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
-import pandas as pd
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pptx import Presentation
 from pptx.enum.shapes import PP_PLACEHOLDER
 from datetime import timedelta
-from openpyxl import load_workbook
+from openpyxl import Workbook
 from openpyxl.styles import PatternFill
 
 # ---------- regex ----------
@@ -89,14 +89,14 @@ def slide_all_text(slide) -> str:
 def is_subheader_title(title: str) -> bool:
     return bool(SUBHEADER_RE.match(title or ""))
 
-def normalized_sublesson_name(slide, header_title: str) -> str:
+def normalized_sublesson_name(slide, header_title: str, precomputed_body: str = None) -> str:
     title = header_title or ""
     code_m = re.match(r'^\s*(\d+\.\d+)\b', title)
     code = code_m.group(1) if code_m else ""
     m = re.match(r'^\s*\d+\.\d+\s*[:\-–]?\s*(.+)$', title)
     if m and m.group(1).strip():
         return f"{code} {m.group(1).strip()}"
-    body = slide_all_text(slide)
+    body = precomputed_body if precomputed_body is not None else slide_all_text(slide)
     for line in (l.strip() for l in body.splitlines() if l.strip()):
         m2 = re.match(r'^\s*\d+\.\d+\s*[:\-–]?\s*(.+)$', line)
         if m2 and m2.group(1).strip():
@@ -124,13 +124,14 @@ def parse_deck(path: Path, deck_label: str) -> List[Tuple[str, int, int, str]]:
     prs = Presentation(str(path))
     slides = list(prs.slides)
     titles = [slide_title(s) for s in slides]
-    combined = [(titles[i] + "\n" + slide_all_text(slides[i])).strip() for i in range(len(slides))]
+    texts = [slide_all_text(s) for s in slides]
+    combined = [(titles[i] + "\n" + texts[i]).strip() for i in range(len(slides))]
 
     header_idxs, header_names = [], {}
     for i, t in enumerate(titles):
         if is_subheader_title(t):
             header_idxs.append(i)
-            header_names[i] = normalized_sublesson_name(slides[i], t)
+            header_names[i] = normalized_sublesson_name(slides[i], t, texts[i])
 
     deck_clean_no_lead = strip_leading_two_digits(deck_label)
     intro_label = "1.0 " + deck_clean_no_lead
@@ -371,6 +372,12 @@ def build_sequence(
 
     return out
 
+# ---------- parallel helper (top-level so it's picklable) ----------
+def _parse_deck_task(args):
+    path_str, deck_label = args
+    rows = parse_deck(Path(path_str), deck_label)
+    return path_str, deck_label, rows
+
 # ---------- runner ----------
 def main():
     ap = argparse.ArgumentParser(description="SAFe timing → Excel with hard cut-offs and start-of-day rows.")
@@ -397,25 +404,47 @@ def main():
         print(f"✗ No .pptx files found in {in_dir}")
         sys.exit(1)
 
-    # Parse decks
+    # Parse decks (parallel when multiple files)
+    tasks = [(str(f), deck_label_from_filename(f.name)) for f in pptx_files]
+    deck_results: Dict[str, Tuple] = {}
+
+    if len(pptx_files) > 1:
+        with ProcessPoolExecutor() as executor:
+            futures = {executor.submit(_parse_deck_task, t): t for t in tasks}
+            for future in as_completed(futures):
+                try:
+                    path_str, deck_label, rows = future.result()
+                    deck_results[deck_label] = (rows, Path(path_str).name)
+                    print(f"✓ {Path(path_str).name}  → {len(rows)} rows", flush=True)
+                except Exception as e:
+                    _, deck_label = futures[future]
+                    print(f"✗ {deck_label}  FAILED: {e}", flush=True)
+    else:
+        for path_str, deck_label in tasks:
+            try:
+                _, _, rows = _parse_deck_task((path_str, deck_label))
+                deck_results[deck_label] = (rows, Path(path_str).name)
+                print(f"✓ {Path(path_str).name}  → {len(rows)} rows", flush=True)
+            except Exception as e:
+                print(f"✗ {Path(path_str).name}  FAILED: {e}", flush=True)
+
+    # Flatten results preserving original file order
     parsed_rows = []
     for f in pptx_files:
-        try:
-            deck_label = deck_label_from_filename(f.name)
-            rows = parse_deck(f, deck_label)
-            for name, slides, act, kind in rows:
-                parsed_rows.append(
-                    {
-                        "Deck": deck_label,
-                        "Sub-lesson": name,
-                        "Slides": int(slides or 0),
-                        "Activity Minutes": int(act or 0),
-                        "kind": kind,
-                    }
-                )
-            print(f"✓ {f.name}  → {len(rows)} rows", flush=True)
-        except Exception as e:
-            print(f"✗ {f.name}  FAILED: {e}", flush=True)
+        deck_label = deck_label_from_filename(f.name)
+        if deck_label not in deck_results:
+            continue
+        rows, _ = deck_results[deck_label]
+        for name, slides, act, kind in rows:
+            parsed_rows.append(
+                {
+                    "Deck": deck_label,
+                    "Sub-lesson": name,
+                    "Slides": int(slides or 0),
+                    "Activity Minutes": int(act or 0),
+                    "kind": kind,
+                }
+            )
 
     if not parsed_rows:
         print("✗ No data parsed.")
@@ -438,33 +467,16 @@ def main():
         mins_per_slide=args.mins_per_slide,
     )
 
-    # Build DataFrame for Excel (no Day/Deck)
-    cols = ["Sub-lesson", "Slides", "Minutes", "Activity Minutes", "Total Minutes", "Start", "End"]
-    df = pd.DataFrame(
-        [
-            {
-                "Sub-lesson": r["Sub-lesson"],
-                "Slides": r["Slides"],
-                "Minutes": "",
-                "Activity Minutes": r["Activity Minutes"],
-                "Total Minutes": "",
-                "Start": "",
-                "End": "",
-                "kind": r["kind"],
-            }
-            for r in sequence
-        ],
-        columns=cols + ["kind"],
-    )
-
     out_path = Path(args.output).expanduser().resolve()
     tmp_path = out_path.with_suffix(".tmp.xlsx")
-    df.drop(columns=["kind"]).to_excel(tmp_path, index=False)
 
-    # Open workbook and add Settings + formulas + formatting
-    wb = load_workbook(tmp_path)
+    # Build workbook directly with openpyxl (no pandas needed)
+    wb = Workbook()
     ws = wb.active
     ws.title = "Timing"
+    ws.append(["Sub-lesson", "Slides", "Minutes", "Activity Minutes", "Total Minutes", "Start", "End"])
+    for r in sequence:
+        ws.append([r["Sub-lesson"], r["Slides"], None, r["Activity Minutes"], None, None, None])
 
     # Settings sheet
     settings = wb["Settings"] if "Settings" in wb.sheetnames else wb.create_sheet("Settings")
