@@ -163,16 +163,16 @@ def parse_deck(path: Path, deck_label: str) -> List[Tuple[str, int, int, str]]:
         return sum(1 for i in range(start, end) if is_video_slide(titles[i]))
 
     def adjusted_row(name, start, end):
-        """Return (name, slide_count, activity_mins, kind, slide_start, acts_per_slide) with video slides contributing 1 min each."""
+        """Return (name, slide_count, activity_mins, kind, slide_start, acts_per_slide) with video slides contributing 2 mins each."""
         vid = count_video(start, end)
         count = max(0, end - start) - vid
-        act = sum_activity(start, end) + vid  # 1 min per video slide replaces mins_per_slide
+        act = sum_activity(start, end) + vid * 2  # 2 mins per video slide replaces mins_per_slide
         # Build per-counted-slide activity list; video mins accumulate to the next counted slide
         acts: List[int] = []
         pending_vid = 0
         for i in range(start, end):
             if is_video_slide(titles[i]):
-                pending_vid += 1
+                pending_vid += 2
             else:
                 slide_act = pending_vid
                 pending_vid = 0
@@ -337,11 +337,17 @@ def build_sequence(
             return None   # nothing in second half → fire after instead
         return slides_1, slides_2
 
+    _SPLIT_SUFFIX = re.compile(r'\s*\((?:from|up to)\s+[\d.]+\)\s*$')
+
+    def _base_name(row: Dict) -> str:
+        """Strip any existing split suffix so re-splits don't stack labels."""
+        return _SPLIT_SUFFIX.sub('', row['Sub-lesson']).rstrip()
+
     def append_first_half(row: Dict, slides_1: int, activity_mins: int, ref: str):
         nonlocal t, first_lesson_scheduled_today
         half_mins = int(round(slides_1 * mins_per_slide)) + activity_mins
         out.append({
-            "Sub-lesson": f"{row['Sub-lesson']} (up to {ref})",
+            "Sub-lesson": f"{_base_name(row)} (up to {ref})",
             "Slides": slides_1,
             "Activity Minutes": activity_mins,
             "kind": "lesson",
@@ -353,7 +359,7 @@ def build_sequence(
                              acts_2: List[int]) -> Dict:
         return {
             "Deck": row.get("Deck", ""),
-            "Sub-lesson": f"{row['Sub-lesson']} (from {ref})",
+            "Sub-lesson": f"{_base_name(row)} (from {ref})",
             "Slides": slides_2,
             "Activity Minutes": sum(acts_2),
             "kind": "lesson",
