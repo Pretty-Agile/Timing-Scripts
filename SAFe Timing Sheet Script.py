@@ -9,7 +9,7 @@ Pretty Agile — SAFe Timing v4.5
 - Excel formulas for Minutes/Total/Start/End; no Day/Deck columns
 - Fixed breaks (10m): 8:30→ 09:30,10:30,11:30,14:30,15:30,16:30,17:30; 9:00→ 10:00,11:00,12:00,15:00,16:00,17:00
 - Breaks and lunch fire within ±5 min of target; lessons split mid-lesson if target falls inside them
-- Split format: "4.2 Lesson (up to 4.14)" / "4.2 Lesson (from 4.14)" — all activity minutes in first half
+- Split format: "4.2 Lesson (up to 4.14)" / "4.2 Lesson (from 4.14)" — activity minutes placed in whichever half contains their slide
 
 """
 import argparse, re, os, sys, platform, time
@@ -163,11 +163,29 @@ def parse_deck(path: Path, deck_label: str) -> List[Tuple[str, int, int, str]]:
         return sum(1 for i in range(start, end) if is_video_slide(titles[i]))
 
     def adjusted_row(name, start, end):
-        """Return (name, slide_count, activity_mins, kind, slide_start) with video slides contributing 1 min each."""
+        """Return (name, slide_count, activity_mins, kind, slide_start, acts_per_slide) with video slides contributing 1 min each."""
         vid = count_video(start, end)
         count = max(0, end - start) - vid
         act = sum_activity(start, end) + vid  # 1 min per video slide replaces mins_per_slide
-        return [name, count, act, "lesson", start]
+        # Build per-counted-slide activity list; video mins accumulate to the next counted slide
+        acts: List[int] = []
+        pending_vid = 0
+        for i in range(start, end):
+            if is_video_slide(titles[i]):
+                pending_vid += 1
+            else:
+                slide_act = pending_vid
+                pending_vid = 0
+                if is_activity_slide(titles[i]):
+                    mins = extract_minutes(combined[i])
+                    if mins is not None:
+                        if is_pi_deck and mins == 50 and PI_PLANNING_SLIDE.search(combined[i]):
+                            mins = 30
+                        slide_act += mins
+                acts.append(slide_act)
+        if pending_vid and acts:
+            acts[-1] += pending_vid  # trailing video slides → last counted slide
+        return [name, count, act, "lesson", start, acts]
 
     rows: List[Tuple[str, int, int, str]] = []
     if not header_idxs:
@@ -296,19 +314,24 @@ def build_sequence(
         return f"{deck_module}.{slide_num:02d}" if deck_module else str(slide_num)
 
     def compute_split(t_now: timedelta, target: timedelta,
-                      slides: int, activity_mins: int) -> Optional[Tuple[int, int]]:
+                      slides: int, acts_per_slide: List[int]) -> Optional[Tuple[int, int]]:
         """
         Return (slides_1, slides_2) for splitting at target, or None if the split
         would leave one half empty (caller should treat as before/after instead).
+        Iterates slide-by-slide so activity minutes on specific slides land in the
+        correct half.
         """
         time_to_break = (target - t_now).total_seconds() / 60
-        slide_time_first = max(0.0, time_to_break - activity_mins)
-        slides_1 = (
-            max(0, min(slides, int(round(slide_time_first / mins_per_slide))))
-            if mins_per_slide > 0 else 0
-        )
+        cumulative = 0.0
+        slides_1 = 0
+        for j in range(slides):
+            slide_cost = mins_per_slide + (acts_per_slide[j] if j < len(acts_per_slide) else 0)
+            if cumulative + slide_cost > time_to_break:
+                break
+            cumulative += slide_cost
+            slides_1 = j + 1
         slides_2 = slides - slides_1
-        if slides_1 == 0 and activity_mins == 0:
+        if slides_1 == 0:
             return None   # nothing in first half → fire before instead
         if slides_2 == 0:
             return None   # nothing in second half → fire after instead
@@ -327,15 +350,16 @@ def build_sequence(
         first_lesson_scheduled_today = True
 
     def make_second_half_row(row: Dict, slides_1: int, slides_2: int, ref: str,
-                             activity_mins: int = 0) -> Dict:
+                             acts_2: List[int]) -> Dict:
         return {
             "Deck": row.get("Deck", ""),
             "Sub-lesson": f"{row['Sub-lesson']} (from {ref})",
             "Slides": slides_2,
-            "Activity Minutes": activity_mins,
+            "Activity Minutes": sum(acts_2),
             "kind": "lesson",
             "slide_start": row.get("slide_start", 0) + slides_1,
             "deck_module": row.get("deck_module", ""),
+            "acts_per_slide": acts_2,
         }
 
     # ---- Main scheduling loop ----
@@ -346,6 +370,7 @@ def build_sequence(
         minutes = int(round(slides * mins_per_slide))
         activity_mins = int(row["Activity Minutes"])
         total = minutes + activity_mins
+        acts_per_slide: List[int] = row.get("acts_per_slide") or [0] * slides
 
         # ---- Catch-up: fire any break targets already >5 min in the past ----
         while (next_break_idx < len(targets)
@@ -371,15 +396,15 @@ def build_sequence(
                 skip_post_lunch_break()
             elif t < lunch_td and lesson_end > lunch_td + BREAK_WINDOW:
                 # Lunch falls well inside the lesson → SPLIT at lunch_td
-                split = compute_split(t, lunch_td, slides, activity_mins)
+                split = compute_split(t, lunch_td, slides, acts_per_slide)
                 if split is not None:
                     slides_1, slides_2 = split
                     ref = make_slide_ref(row, slides_1)
-                    append_first_half(row, slides_1, activity_mins, ref)
+                    append_first_half(row, slides_1, sum(acts_per_slide[:slides_1]), ref)
                     append_block("lunch", 45)
                     lunch_done_today = True
                     skip_post_lunch_break()
-                    rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref)
+                    rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref, acts_per_slide[slides_1:])
                     continue
                 else:
                     # Degenerate: nothing fits before lunch → fire BEFORE
@@ -402,14 +427,14 @@ def build_sequence(
                 next_break_idx += 1
             elif t < target and lesson_end > target + BREAK_WINDOW:
                 # Target falls well inside the lesson → SPLIT
-                split = compute_split(t, target, slides, activity_mins)
+                split = compute_split(t, target, slides, acts_per_slide)
                 if split is not None:
                     slides_1, slides_2 = split
                     ref = make_slide_ref(row, slides_1)
-                    append_first_half(row, slides_1, activity_mins, ref)
+                    append_first_half(row, slides_1, sum(acts_per_slide[:slides_1]), ref)
                     append_block("break", 10)
                     next_break_idx += 1
-                    rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref)
+                    rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref, acts_per_slide[slides_1:])
                     continue
                 else:
                     # Degenerate: check which side is closer
@@ -425,18 +450,22 @@ def build_sequence(
         # ---- Day overflow: split at end-of-day boundary or push whole lesson ----
         if t + timedelta(minutes=total) > end_td:
             remaining_mins = (end_td - t).total_seconds() / 60
-            # Activity goes to the SECOND half (next day), so slides get all remaining time
-            slides_1 = (
-                max(0, min(slides, int(round(remaining_mins / mins_per_slide))))
-                if mins_per_slide > 0 else 0
-            )
+            # Find how many slides (with their own activity) fit before end of day
+            cumulative = 0.0
+            slides_1 = 0
+            for j in range(slides):
+                slide_cost = mins_per_slide + (acts_per_slide[j] if j < len(acts_per_slide) else 0)
+                if cumulative + slide_cost > remaining_mins:
+                    break
+                cumulative += slide_cost
+                slides_1 = j + 1
             slides_2 = slides - slides_1
             if slides_1 > 0:
                 # At least one slide fits today: split across the day boundary
                 ref = make_slide_ref(row, slides_1)
-                append_first_half(row, slides_1, 0, ref)          # 0 activity in first half
+                append_first_half(row, slides_1, sum(acts_per_slide[:slides_1]), ref)
                 end_day_and_start_next()
-                rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref, activity_mins)
+                rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref, acts_per_slide[slides_1:])
                 continue
             else:
                 # Nothing fits today: push whole lesson to next day
@@ -544,7 +573,7 @@ def main():
         rows, _ = deck_results[deck_label]
         m_mod = re.match(r'^\s*(\d+)', deck_label)
         deck_module = m_mod.group(1) if m_mod else ""
-        for name, slides, act, kind, slide_start in rows:
+        for name, slides, act, kind, slide_start, acts_per_slide in rows:
             parsed_rows.append(
                 {
                     "Deck": deck_label,
@@ -554,6 +583,7 @@ def main():
                     "kind": kind,
                     "slide_start": slide_start,
                     "deck_module": deck_module,
+                    "acts_per_slide": acts_per_slide,
                 }
             )
 
