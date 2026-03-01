@@ -27,6 +27,7 @@ from openpyxl.styles import PatternFill
 
 # ---------- regex ----------
 ACTIVITY_PREFIX = re.compile(r'^\s*(activity|discussion|video|action\s*plan)\b', re.I)
+VIDEO_PREFIX    = re.compile(r'^\s*video\b', re.I)
 PI_PLANNING_DECK = re.compile(r'leading\s+safe|safe\s+scrum\s+master|implementing\s+safe', re.I)
 PI_PLANNING_SLIDE = re.compile(r'pi\s+planning', re.I)
 SUBHEADER_RE = re.compile(r'^\s*\d+\.\d+\b(?!\.)')
@@ -108,6 +109,9 @@ def normalized_sublesson_name(slide, header_title: str, precomputed_body: str = 
 def is_activity_slide(title: str) -> bool:
     return bool(ACTIVITY_PREFIX.match(title or ""))
 
+def is_video_slide(title: str) -> bool:
+    return bool(VIDEO_PREFIX.match(title or ""))
+
 def extract_minutes(text: str) -> Optional[int]:
     s = (text or "").replace("\u2013", "-").replace("\u2014", "-")
     for pat, func in DUR_PATTERNS:
@@ -158,21 +162,29 @@ def parse_deck(path: Path, deck_label: str) -> List[Tuple[str, int, int, str]]:
                     total += mins
         return total
 
+    def count_video(start: int, end: int) -> int:
+        return sum(1 for i in range(start, end) if is_video_slide(titles[i]))
+
+    def adjusted_row(name, start, end):
+        """Return (name, slide_count, activity_mins) with video slides contributing 1 min each."""
+        vid = count_video(start, end)
+        count = max(0, end - start) - vid
+        act = sum_activity(start, end) + vid  # 1 min per video slide replaces mins_per_slide
+        return [name, count, act, "lesson"]
+
     rows: List[Tuple[str, int, int, str]] = []
     if not header_idxs:
-        rows.append([intro_label, len(slides), sum_activity(0, len(slides)), "lesson"])
+        rows.append(adjusted_row(intro_label, 0, len(slides)))
         return rows
 
     first = header_idxs[0]
     if first > 0:
-        rows.append([intro_label, first, sum_activity(0, first), "lesson"])
+        rows.append(adjusted_row(intro_label, 0, first))
 
     for k, start in enumerate(header_idxs):
         end = header_idxs[k + 1] if k + 1 < len(header_idxs) else len(slides)
         name = header_names.get(start) or f"Sub-lesson {k+1}"
-        count = max(0, end - start)
-        act = sum_activity(start, end)
-        rows.append([name, count, act, "lesson"])
+        rows.append(adjusted_row(name, start, end))
 
     return rows
 
