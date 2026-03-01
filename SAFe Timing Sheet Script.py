@@ -430,8 +430,8 @@ def build_sequence(
                 if mins_per_slide > 0 else 0
             )
             slides_2 = slides - slides_1
-            if slides_1 > 0 or activity_mins > 0:
-                # Something fits today: split across the day boundary
+            if slides_1 > 0:
+                # At least one slide fits today: split across the day boundary
                 ref = make_slide_ref(row, slides_1)
                 append_first_half(row, slides_1, activity_mins, ref)
                 end_day_and_start_next()
