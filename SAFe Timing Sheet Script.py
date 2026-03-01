@@ -351,11 +351,12 @@ def build_sequence(
                 if next_break_idx < len(targets) and targets[next_break_idx] == skip_target:
                     next_break_idx += 1
 
-        # BREAK AFTER if target crossed and after boundary closer
+        # BREAK AFTER if target crossed and break still fits in today
         if next_break_idx < len(targets):
             target = targets[next_break_idx]
             if t > target:
-                append_block("break", 10)
+                if t + timedelta(minutes=10) <= end_td:
+                    append_block("break", 10)
                 next_break_idx += 1
 
         i += 1
