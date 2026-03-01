@@ -8,7 +8,8 @@ Pretty Agile — SAFe Timing v4.5
 - 12-hour h:mm AM/PM formatting; grey shading for Break/Lunch/Start of Day
 - Excel formulas for Minutes/Total/Start/End; no Day/Deck columns
 - Fixed breaks (10m): 8:30→ 09:30,10:30,11:30,14:30,15:30,16:30,17:30; 9:00→ 10:00,11:00,12:00,15:00,16:00,17:00
-- Lunch target 12:30 (8:30) or 13:00 (9:00), earliest = target−15m; before/after closest boundary; no splitting lessons
+- Breaks and lunch fire within ±5 min of target; lessons split mid-lesson if target falls inside them
+- Split format: "4.2 Lesson (up to 4.14)" / "4.2 Lesson (from 4.14)" — all activity minutes in first half
 
 """
 import argparse, re, os, sys, platform, time
@@ -162,11 +163,11 @@ def parse_deck(path: Path, deck_label: str) -> List[Tuple[str, int, int, str]]:
         return sum(1 for i in range(start, end) if is_video_slide(titles[i]))
 
     def adjusted_row(name, start, end):
-        """Return (name, slide_count, activity_mins) with video slides contributing 1 min each."""
+        """Return (name, slide_count, activity_mins, kind, slide_start) with video slides contributing 1 min each."""
         vid = count_video(start, end)
         count = max(0, end - start) - vid
         act = sum_activity(start, end) + vid  # 1 min per video slide replaces mins_per_slide
-        return [name, count, act, "lesson"]
+        return [name, count, act, "lesson", start]
 
     rows: List[Tuple[str, int, int, str]] = []
     if not header_idxs:
@@ -222,12 +223,24 @@ def build_sequence(
     """
     Returns ordered rows (lessons + Start of Day + breaks + lunch + final close),
     respecting daily cut-offs and 'do not skip' for breaks/lunch.
+
+    Breaks and lunch fire within ±5 minutes of their target times.  If a target
+    falls well inside a lesson (neither lesson boundary is within the 5-minute
+    window), the lesson is split at the target time:
+      "4.2 Lesson Name (up to 4.14)"  ← first half  (all activity minutes here)
+      "4.2 Lesson Name (from 4.14)"   ← second half (0 activity minutes)
+    where 4.14 is the module.slide notation for the first slide of the second half.
     """
+    BREAK_WINDOW = timedelta(minutes=5)
+
     start_td = parse_hhmm(day_start)
     end_td = parse_hhmm(day_end)
     lunch_td = parse_hhmm(lunch_time)
     lunch_earliest = lunch_td - timedelta(minutes=15)
     targets = fixed_break_targets(day_window)
+
+    # Make a mutable copy so we can replace rows in-place during splits
+    rows_by_deck = list(rows_by_deck)
 
     out: List[Dict[str, Any]] = []
     day = 1
@@ -242,17 +255,7 @@ def build_sequence(
         lunch_done_today = False
         next_break_idx = 0
         first_lesson_scheduled_today = False
-
-        # Visible start-of-day marker (0 mins, grey in Excel)
-        out.append(
-            {
-                "Sub-lesson": "Start of Day",
-                "Slides": 0,
-                "Activity Minutes": 0,
-                "kind": "sod",
-            }
-        )
-
+        out.append({"Sub-lesson": "Start of Day", "Slides": 0, "Activity Minutes": 0, "kind": "sod"})
 
     def end_day_and_start_next():
         nonlocal day
@@ -265,112 +268,197 @@ def build_sequence(
     # Helper to append Break/Lunch respecting overflow (move to next day if needed)
     def append_block(kind: str, minutes: int):
         nonlocal t
-        # Don't place a break immediately after another break
         if kind == "break" and out and out[-1]["kind"] == "break":
             return
         if t + timedelta(minutes=minutes) > end_td:
             end_day_and_start_next()
-        out.append(
-            {
-                "Sub-lesson": "Break" if kind == "break" else "Lunch",
-                "Slides": 0,
-                "Activity Minutes": minutes,
-                "kind": kind,
-            }
-        )
-        t = t + timedelta(minutes=minutes)
+        out.append({
+            "Sub-lesson": "Break" if kind == "break" else "Lunch",
+            "Slides": 0,
+            "Activity Minutes": minutes,
+            "kind": kind,
+        })
+        t += timedelta(minutes=minutes)
 
+    def skip_post_lunch_break():
+        nonlocal next_break_idx
+        skip_target = (
+            timedelta(hours=13, minutes=30) if day_window == "8:30-18:00"
+            else timedelta(hours=14, minutes=0)
+        )
+        if next_break_idx < len(targets) and targets[next_break_idx] == skip_target:
+            next_break_idx += 1
+
+    def make_slide_ref(row: Dict, slides_before: int) -> str:
+        """Return 'module.NN' for the first slide of the second half (1-indexed in deck)."""
+        slide_num = row.get("slide_start", 0) + slides_before + 1
+        deck_module = row.get("deck_module", "")
+        return f"{deck_module}.{slide_num:02d}" if deck_module else str(slide_num)
+
+    def compute_split(t_now: timedelta, target: timedelta,
+                      slides: int, activity_mins: int) -> Optional[Tuple[int, int]]:
+        """
+        Return (slides_1, slides_2) for splitting at target, or None if the split
+        would leave one half empty (caller should treat as before/after instead).
+        """
+        time_to_break = (target - t_now).total_seconds() / 60
+        slide_time_first = max(0.0, time_to_break - activity_mins)
+        slides_1 = (
+            max(0, min(slides, int(round(slide_time_first / mins_per_slide))))
+            if mins_per_slide > 0 else 0
+        )
+        slides_2 = slides - slides_1
+        if slides_1 == 0 and activity_mins == 0:
+            return None   # nothing in first half → fire before instead
+        if slides_2 == 0:
+            return None   # nothing in second half → fire after instead
+        return slides_1, slides_2
+
+    def append_first_half(row: Dict, slides_1: int, activity_mins: int, ref: str):
+        nonlocal t, first_lesson_scheduled_today
+        half_mins = int(round(slides_1 * mins_per_slide)) + activity_mins
+        out.append({
+            "Sub-lesson": f"{row['Sub-lesson']} (up to {ref})",
+            "Slides": slides_1,
+            "Activity Minutes": activity_mins,
+            "kind": "lesson",
+        })
+        t += timedelta(minutes=half_mins)
+        first_lesson_scheduled_today = True
+
+    def make_second_half_row(row: Dict, slides_1: int, slides_2: int, ref: str) -> Dict:
+        return {
+            "Deck": row.get("Deck", ""),
+            "Sub-lesson": f"{row['Sub-lesson']} (from {ref})",
+            "Slides": slides_2,
+            "Activity Minutes": 0,
+            "kind": "lesson",
+            "slide_start": row.get("slide_start", 0) + slides_1,
+            "deck_module": row.get("deck_module", ""),
+        }
+
+    # ---- Main scheduling loop ----
     i = 0
     while i < len(rows_by_deck):
         row = rows_by_deck[i]
         slides = int(row["Slides"])
         minutes = int(round(slides * mins_per_slide))
-        total = minutes + int(row["Activity Minutes"])
+        activity_mins = int(row["Activity Minutes"])
+        total = minutes + activity_mins
 
-        # LUNCH BEFORE block if at/after earliest and closer before
+        # ---- Catch-up: fire any break targets already >5 min in the past ----
+        while (next_break_idx < len(targets)
+               and t > targets[next_break_idx] + BREAK_WINDOW):
+            if first_lesson_scheduled_today:
+                if t + timedelta(minutes=10 + total) <= end_td:
+                    append_block("break", 10)
+            next_break_idx += 1
+
+        # ---- Lunch catch-up: past the window, fire before this lesson ----
+        if not lunch_done_today and t >= lunch_earliest and t > lunch_td + BREAK_WINDOW:
+            append_block("lunch", 45)
+            lunch_done_today = True
+            skip_post_lunch_break()
+
+        # ---- Lunch: BEFORE or SPLIT ----
         if not lunch_done_today and t >= lunch_earliest:
-            before_delta = abs((t - lunch_td).total_seconds())
-            after_delta = abs(((t + timedelta(minutes=total)) - lunch_td).total_seconds())
-            if before_delta <= after_delta:
+            lesson_end = t + timedelta(minutes=total)
+            if abs(t - lunch_td) <= BREAK_WINDOW:
+                # Lesson start within ±5 min of lunch → LUNCH BEFORE
                 append_block("lunch", 45)
                 lunch_done_today = True
-                # skip the first post-lunch break target
-                if day_window == "8:30-18:00":
-                    skip_target = timedelta(hours=13, minutes=30)
+                skip_post_lunch_break()
+            elif t < lunch_td and lesson_end > lunch_td + BREAK_WINDOW:
+                # Lunch falls well inside the lesson → SPLIT at lunch_td
+                split = compute_split(t, lunch_td, slides, activity_mins)
+                if split is not None:
+                    slides_1, slides_2 = split
+                    ref = make_slide_ref(row, slides_1)
+                    append_first_half(row, slides_1, activity_mins, ref)
+                    append_block("lunch", 45)
+                    lunch_done_today = True
+                    skip_post_lunch_break()
+                    rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref)
+                    continue
                 else:
-                    skip_target = timedelta(hours=14, minutes=0)
-                if next_break_idx < len(targets) and targets[next_break_idx] == skip_target:
-                    next_break_idx += 1
+                    # Degenerate: nothing fits before lunch → fire BEFORE
+                    time_to_lunch = (lunch_td - t).total_seconds() / 60
+                    if time_to_lunch <= activity_mins:
+                        append_block("lunch", 45)
+                        lunch_done_today = True
+                        skip_post_lunch_break()
+                    # else slides_2==0 → caught by LUNCH AFTER below
 
-        # BREAK BEFORE if target falls inside this lesson window and before boundary is closer
+        # ---- Break: BEFORE or SPLIT ----
         if next_break_idx < len(targets):
             target = targets[next_break_idx]
-            if t > target:
-                # Catch-up break – only insert if lesson still fits in today after the break
+            lesson_end = t + timedelta(minutes=total)
+            if abs(t - target) <= BREAK_WINDOW:
+                # Lesson start within ±5 min of target → BREAK BEFORE
                 if first_lesson_scheduled_today:
                     if t + timedelta(minutes=10 + total) <= end_td:
                         append_block("break", 10)
+                next_break_idx += 1
+            elif t < target and lesson_end > target + BREAK_WINDOW:
+                # Target falls well inside the lesson → SPLIT
+                split = compute_split(t, target, slides, activity_mins)
+                if split is not None:
+                    slides_1, slides_2 = split
+                    ref = make_slide_ref(row, slides_1)
+                    append_first_half(row, slides_1, activity_mins, ref)
+                    append_block("break", 10)
                     next_break_idx += 1
-            elif t + timedelta(minutes=total) > target:
-                dist_before = abs((t - target).total_seconds())
-                dist_after = abs(((t + timedelta(minutes=total)) - target).total_seconds())
-                if dist_before <= dist_after and first_lesson_scheduled_today:
-                    if t + timedelta(minutes=10 + total) <= end_td:
-                        append_block("break", 10)
-                    next_break_idx += 1
+                    rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref)
+                    continue
+                else:
+                    # Degenerate: check which side is closer
+                    time_to_target = (target - t).total_seconds() / 60
+                    if time_to_target <= activity_mins:
+                        # All activity fills time before target → fire BEFORE
+                        if first_lesson_scheduled_today:
+                            if t + timedelta(minutes=10 + total) <= end_td:
+                                append_block("break", 10)
+                        next_break_idx += 1
+                    # else slides_2==0 → caught by BREAK AFTER below
 
-        # If the lesson itself won't fit, push to next day
+        # ---- Day overflow: push to next day if lesson won't fit ----
         if t + timedelta(minutes=total) > end_td:
             end_day_and_start_next()
-            # Lunch check will happen naturally on the new day loop
 
-        # Schedule lesson
-        out.append(
-            {
-                "Sub-lesson": row["Sub-lesson"],
-                "Slides": slides,
-                "Activity Minutes": int(row["Activity Minutes"]),
-                "kind": "lesson",
-            }
-        )
-        t = t + timedelta(minutes=total)
+        # ---- Schedule lesson ----
+        out.append({
+            "Sub-lesson": row["Sub-lesson"],
+            "Slides": slides,
+            "Activity Minutes": activity_mins,
+            "kind": "lesson",
+        })
+        t += timedelta(minutes=total)
         first_lesson_scheduled_today = True
 
-        # LUNCH AFTER if closer and allowed
+        # ---- Lunch AFTER: lesson end within ±5 min of lunch target ----
         if not lunch_done_today and t >= lunch_earliest:
-            before_delta = abs(((t - timedelta(minutes=total)) - lunch_td).total_seconds())
-            after_delta = abs((t - lunch_td).total_seconds())
-            if after_delta < before_delta:
+            if abs(t - lunch_td) <= BREAK_WINDOW:
                 append_block("lunch", 45)
                 lunch_done_today = True
-                # skip immediate post-lunch target
-                if day_window == "8:30-18:00":
-                    skip_target = timedelta(hours=13, minutes=30)
-                else:
-                    skip_target = timedelta(hours=14, minutes=0)
-                if next_break_idx < len(targets) and targets[next_break_idx] == skip_target:
-                    next_break_idx += 1
+                skip_post_lunch_break()
 
-        # BREAK AFTER if target crossed and break still fits in today
+        # ---- Break AFTER: lesson end within ±5 min of break target ----
         if next_break_idx < len(targets):
             target = targets[next_break_idx]
-            if t > target:
+            if t >= target - BREAK_WINDOW and t <= target + BREAK_WINDOW:
                 if t + timedelta(minutes=10) <= end_td:
                     append_block("break", 10)
                 next_break_idx += 1
 
         i += 1
 
-    # After last lesson sequence, add final Close row if time remains in the current day
-    # (Excel will compute the minutes via formula, see writer below)
-    out.append(
-        {
-            "Sub-lesson": "Close – Photo, Feedback & Exam",
-            "Slides": 0,
-            "Activity Minutes": 0,
-            "kind": "close",
-        }
-    )
+    # After last lesson, add final Close row
+    out.append({
+        "Sub-lesson": "Close – Photo, Feedback & Exam",
+        "Slides": 0,
+        "Activity Minutes": 0,
+        "kind": "close",
+    })
 
     return out
 
@@ -437,7 +525,9 @@ def main():
         if deck_label not in deck_results:
             continue
         rows, _ = deck_results[deck_label]
-        for name, slides, act, kind in rows:
+        m_mod = re.match(r'^\s*(\d+)', deck_label)
+        deck_module = m_mod.group(1) if m_mod else ""
+        for name, slides, act, kind, slide_start in rows:
             parsed_rows.append(
                 {
                     "Deck": deck_label,
@@ -445,6 +535,8 @@ def main():
                     "Slides": int(slides or 0),
                     "Activity Minutes": int(act or 0),
                     "kind": kind,
+                    "slide_start": slide_start,
+                    "deck_module": deck_module,
                 }
             )
 
