@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Pretty Agile — SAFe Timing v4.5
-- Hard daily cut-off: 9:00→18:00 (default); 8:30→17:30 (optional)
+- Hard daily cut-off: 9:00→18:00 (default); 8:30→18:00 (optional)
 - Visible 'Start of Day' row (0 mins, grey) resets time each day
 - Do NOT skip breaks/lunch: if a Break/Lunch would overflow today, end day and place it first thing next day
 - Final day: if time remains, add 'Close – Photo, Feedback & Exam' to fill remaining time (formula)
 - 12-hour h:mm AM/PM formatting; grey shading for Break/Lunch/Start of Day
 - Excel formulas for Minutes/Total/Start/End; no Day/Deck columns
-- Fixed breaks (10m): 8:30→ 09:30,10:30,11:30,14:30,15:30,16:30; 9:00→ 10:00,11:00,12:00,15:00,16:00,17:00
+- Fixed breaks (10m): 8:30→ 09:30,10:30,11:30,14:30,15:30,16:30,17:30; 9:00→ 10:00,11:00,12:00,15:00,16:00,17:00
 - Lunch target 12:30 (8:30) or 13:00 (9:00), earliest = target−15m; before/after closest boundary; no splitting lessons
 
 """
@@ -190,7 +190,7 @@ def parse_hhmm(s: str) -> timedelta:
     return timedelta(hours=int(h), minutes=int(m))
 
 def fixed_break_targets(day_window: str) -> List[timedelta]:
-    if day_window == "8:30-17:30":
+    if day_window == "8:30-18:00":
         return [
             timedelta(hours=9, minutes=30),
             timedelta(hours=10, minutes=30),
@@ -198,6 +198,7 @@ def fixed_break_targets(day_window: str) -> List[timedelta]:
             timedelta(hours=14, minutes=30),
             timedelta(hours=15, minutes=30),
             timedelta(hours=16, minutes=30),
+            timedelta(hours=17, minutes=30),
         ]
     else:
         return [
@@ -294,7 +295,7 @@ def build_sequence(
                 append_block("lunch", 45)
                 lunch_done_today = True
                 # skip the first post-lunch break target
-                if day_window == "8:30-17:30":
+                if day_window == "8:30-18:00":
                     skip_target = timedelta(hours=13, minutes=30)
                 else:
                     skip_target = timedelta(hours=14, minutes=0)
@@ -343,18 +344,19 @@ def build_sequence(
                 append_block("lunch", 45)
                 lunch_done_today = True
                 # skip immediate post-lunch target
-                if day_window == "8:30-17:30":
+                if day_window == "8:30-18:00":
                     skip_target = timedelta(hours=13, minutes=30)
                 else:
                     skip_target = timedelta(hours=14, minutes=0)
                 if next_break_idx < len(targets) and targets[next_break_idx] == skip_target:
                     next_break_idx += 1
 
-        # BREAK AFTER if target crossed and after boundary closer
+        # BREAK AFTER if target crossed and break still fits in today
         if next_break_idx < len(targets):
             target = targets[next_break_idx]
             if t > target:
-                append_block("break", 10)
+                if t + timedelta(minutes=10) <= end_td:
+                    append_block("break", 10)
                 next_break_idx += 1
 
         i += 1
@@ -384,13 +386,13 @@ def main():
     ap.add_argument("--input-folder", default="timing-sheets/decks")
     ap.add_argument("--output", default="TimingSheet.xlsx")
     ap.add_argument("--mins-per-slide", type=float, default=2.0)
-    ap.add_argument("--day-window", choices=["8:30-17:30", "9:00-18:00"], default="9:00-18:00")
+    ap.add_argument("--day-window", choices=["8:30-18:00", "9:00-18:00"], default="9:00-18:00")
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
 
-    if args.day_window == "8:30-17:30":
-        day_start, day_end, lunch_time = "08:30", "17:30", "12:30"
+    if args.day_window == "8:30-18:00":
+        day_start, day_end, lunch_time = "08:30", "18:00", "12:30"
     else:
         day_start, day_end, lunch_time = "09:00", "18:00", "13:00"
 
