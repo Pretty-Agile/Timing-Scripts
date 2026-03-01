@@ -337,11 +337,17 @@ def build_sequence(
             return None   # nothing in second half → fire after instead
         return slides_1, slides_2
 
+    _SPLIT_SUFFIX = re.compile(r'\s*\((?:from|up to)\s+[\d.]+\)\s*$')
+
+    def _base_name(row: Dict) -> str:
+        """Strip any existing split suffix so re-splits don't stack labels."""
+        return _SPLIT_SUFFIX.sub('', row['Sub-lesson']).rstrip()
+
     def append_first_half(row: Dict, slides_1: int, activity_mins: int, ref: str):
         nonlocal t, first_lesson_scheduled_today
         half_mins = int(round(slides_1 * mins_per_slide)) + activity_mins
         out.append({
-            "Sub-lesson": f"{row['Sub-lesson']} (up to {ref})",
+            "Sub-lesson": f"{_base_name(row)} (up to {ref})",
             "Slides": slides_1,
             "Activity Minutes": activity_mins,
             "kind": "lesson",
@@ -353,7 +359,7 @@ def build_sequence(
                              acts_2: List[int]) -> Dict:
         return {
             "Deck": row.get("Deck", ""),
-            "Sub-lesson": f"{row['Sub-lesson']} (from {ref})",
+            "Sub-lesson": f"{_base_name(row)} (from {ref})",
             "Slides": slides_2,
             "Activity Minutes": sum(acts_2),
             "kind": "lesson",
