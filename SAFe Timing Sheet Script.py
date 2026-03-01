@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Pretty Agile — SAFe Timing v4.5
-- Hard daily cut-off: 8:30→17:30, 9:00→18:00
+- Hard daily cut-off: 9:00→18:00 (default); 8:30→17:30 (optional)
 - Visible 'Start of Day' row (0 mins, grey) resets time each day
 - Do NOT skip breaks/lunch: if a Break/Lunch would overflow today, end day and place it first thing next day
 - Final day: if time remains, add 'Close – Photo, Feedback & Exam' to fill remaining time (formula)
@@ -279,9 +279,10 @@ def build_sequence(
     # Helper to append Break/Lunch respecting overflow (move to next day if needed)
     def append_block(kind: str, minutes: int):
         nonlocal t
+        # Don't place a break immediately after another break
+        if kind == "break" and out and out[-1]["kind"] == "break":
+            return
         if t + timedelta(minutes=minutes) > end_td:
-            if kind == "break":
-                return  # skip break that overflows end-of-day; don't start a new day for it
             end_day_and_start_next()
         out.append(
             {
@@ -398,7 +399,7 @@ def main():
     ap.add_argument("--input-folder", required=True)
     ap.add_argument("--output", default="TimingSheet.xlsx")
     ap.add_argument("--mins-per-slide", type=float, default=2.0)
-    ap.add_argument("--day-window", choices=["8:30-17:30", "9:00-18:00"], default="8:30-17:30")
+    ap.add_argument("--day-window", choices=["8:30-17:30", "9:00-18:00"], default="9:00-18:00")
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
