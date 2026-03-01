@@ -12,7 +12,7 @@ Pretty Agile — SAFe Timing v4.5
 
 NEW:
 - Day 1: 30-minute "Intros" row immediately after "Start of Day"
-- Days 2+: 10-minute "Intros" row immediately after "Start of Day"
+- Days 2+: no Intros row
 - Intros consume the day window (less time for lessons/Close)
 """
 import argparse, re, os, sys, platform, time
@@ -256,19 +256,17 @@ def build_sequence(
             }
         )
 
-        # Intros row: 30 mins on Day 1, 10 mins on subsequent days
-        intros_minutes = 30 if day == 1 else 10
-        out.append(
-            {
-                "Sub-lesson": "Intros",
-                "Slides": 0,
-                "Activity Minutes": intros_minutes,
-                "kind": "intros",
-            }
-        )
-
-        # Move current time past the intros buffer
-        t = t + timedelta(minutes=intros_minutes)
+        # Intros row: 30 mins on Day 1 only
+        if day == 1:
+            out.append(
+                {
+                    "Sub-lesson": "Intros",
+                    "Slides": 0,
+                    "Activity Minutes": 30,
+                    "kind": "intros",
+                }
+            )
+            t = t + timedelta(minutes=30)
 
     def end_day_and_start_next():
         nonlocal day
