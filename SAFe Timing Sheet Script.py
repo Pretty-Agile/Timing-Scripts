@@ -279,9 +279,10 @@ def build_sequence(
     # Helper to append Break/Lunch respecting overflow (move to next day if needed)
     def append_block(kind: str, minutes: int):
         nonlocal t
+        # Don't place a break immediately after another break
+        if kind == "break" and out and out[-1]["kind"] == "break":
+            return
         if t + timedelta(minutes=minutes) > end_td:
-            if kind == "break":
-                return  # skip break that overflows end-of-day; don't start a new day for it
             end_day_and_start_next()
         out.append(
             {
