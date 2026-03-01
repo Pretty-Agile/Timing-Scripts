@@ -326,12 +326,13 @@ def build_sequence(
         t += timedelta(minutes=half_mins)
         first_lesson_scheduled_today = True
 
-    def make_second_half_row(row: Dict, slides_1: int, slides_2: int, ref: str) -> Dict:
+    def make_second_half_row(row: Dict, slides_1: int, slides_2: int, ref: str,
+                             activity_mins: int = 0) -> Dict:
         return {
             "Deck": row.get("Deck", ""),
             "Sub-lesson": f"{row['Sub-lesson']} (from {ref})",
             "Slides": slides_2,
-            "Activity Minutes": 0,
+            "Activity Minutes": activity_mins,
             "kind": "lesson",
             "slide_start": row.get("slide_start", 0) + slides_1,
             "deck_module": row.get("deck_module", ""),
@@ -424,18 +425,18 @@ def build_sequence(
         # ---- Day overflow: split at end-of-day boundary or push whole lesson ----
         if t + timedelta(minutes=total) > end_td:
             remaining_mins = (end_td - t).total_seconds() / 60
-            slide_time_first = max(0.0, remaining_mins - activity_mins)
+            # Activity goes to the SECOND half (next day), so slides get all remaining time
             slides_1 = (
-                max(0, min(slides, int(round(slide_time_first / mins_per_slide))))
+                max(0, min(slides, int(round(remaining_mins / mins_per_slide))))
                 if mins_per_slide > 0 else 0
             )
             slides_2 = slides - slides_1
             if slides_1 > 0:
                 # At least one slide fits today: split across the day boundary
                 ref = make_slide_ref(row, slides_1)
-                append_first_half(row, slides_1, activity_mins, ref)
+                append_first_half(row, slides_1, 0, ref)          # 0 activity in first half
                 end_day_and_start_next()
-                rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref)
+                rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref, activity_mins)
                 continue
             else:
                 # Nothing fits today: push whole lesson to next day
