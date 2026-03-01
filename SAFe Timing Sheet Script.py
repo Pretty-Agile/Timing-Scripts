@@ -421,9 +421,25 @@ def build_sequence(
                         next_break_idx += 1
                     # else slides_2==0 → caught by BREAK AFTER below
 
-        # ---- Day overflow: push to next day if lesson won't fit ----
+        # ---- Day overflow: split at end-of-day boundary or push whole lesson ----
         if t + timedelta(minutes=total) > end_td:
-            end_day_and_start_next()
+            remaining_mins = (end_td - t).total_seconds() / 60
+            slide_time_first = max(0.0, remaining_mins - activity_mins)
+            slides_1 = (
+                max(0, min(slides, int(round(slide_time_first / mins_per_slide))))
+                if mins_per_slide > 0 else 0
+            )
+            slides_2 = slides - slides_1
+            if slides_1 > 0 or activity_mins > 0:
+                # Something fits today: split across the day boundary
+                ref = make_slide_ref(row, slides_1)
+                append_first_half(row, slides_1, activity_mins, ref)
+                end_day_and_start_next()
+                rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref)
+                continue
+            else:
+                # Nothing fits today: push whole lesson to next day
+                end_day_and_start_next()
 
         # ---- Schedule lesson ----
         out.append({
