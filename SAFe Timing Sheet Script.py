@@ -10,10 +10,6 @@ Pretty Agile — SAFe Timing v4.5
 - Fixed breaks (10m): 8:30→ 09:30,10:30,11:30,14:30,15:30,16:30; 9:00→ 10:00,11:00,12:00,15:00,16:00,17:00
 - Lunch target 12:30 (8:30) or 13:00 (9:00), earliest = target−15m; before/after closest boundary; no splitting lessons
 
-NEW:
-- Day 1: 30-minute "Intros" row immediately after "Start of Day"
-- Days 2+: no Intros row
-- Intros consume the day window (less time for lessons/Close)
 """
 import argparse, re, os, sys, platform, time
 from pathlib import Path
@@ -223,7 +219,7 @@ def build_sequence(
     mins_per_slide: float,
 ) -> List[Dict[str, Any]]:
     """
-    Returns ordered rows (lessons + Start of Day + Intros + breaks + lunch + final close),
+    Returns ordered rows (lessons + Start of Day + breaks + lunch + final close),
     respecting daily cut-offs and 'do not skip' for breaks/lunch.
     """
     start_td = parse_hhmm(day_start)
@@ -256,17 +252,6 @@ def build_sequence(
             }
         )
 
-        # Intros row: 30 mins on Day 1 only
-        if day == 1:
-            out.append(
-                {
-                    "Sub-lesson": "Intros",
-                    "Slides": 0,
-                    "Activity Minutes": 30,
-                    "kind": "intros",
-                }
-            )
-            t = t + timedelta(minutes=30)
 
     def end_day_and_start_next():
         nonlocal day
@@ -396,7 +381,7 @@ def _parse_deck_task(args):
 # ---------- runner ----------
 def main():
     ap = argparse.ArgumentParser(description="SAFe timing → Excel with hard cut-offs and start-of-day rows.")
-    ap.add_argument("--input-folder", required=True)
+    ap.add_argument("--input-folder", default="timing-sheets/decks")
     ap.add_argument("--output", default="TimingSheet.xlsx")
     ap.add_argument("--mins-per-slide", type=float, default=2.0)
     ap.add_argument("--day-window", choices=["8:30-17:30", "9:00-18:00"], default="9:00-18:00")
@@ -472,7 +457,7 @@ def main():
 
     parsed_rows.sort(key=lambda r: (r["Deck"], subcode(r["Sub-lesson"]), r["Sub-lesson"]))
 
-    # Build sequence with hard cut-offs (now includes Intros rows)
+    # Build sequence with hard cut-offs
     sequence = build_sequence(
         parsed_rows,
         day_start,
@@ -542,7 +527,7 @@ def main():
         ws[f"F{r}"].number_format = time_fmt
         ws[f"G{r}"].number_format = time_fmt
 
-        # Grey fill for Break/Lunch/Start of Day (Intros stays normal)
+        # Grey fill for Break/Lunch/Start of Day
         if lbl in ("Break", "Lunch", "Start of Day"):
             for col in ("A", "B", "C", "D", "E", "F", "G"):
                 ws[f"{col}{r}"].fill = grey
