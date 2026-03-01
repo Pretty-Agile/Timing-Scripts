@@ -280,6 +280,8 @@ def build_sequence(
     def append_block(kind: str, minutes: int):
         nonlocal t
         if t + timedelta(minutes=minutes) > end_td:
+            if kind == "break":
+                return  # skip break that overflows end-of-day; don't start a new day for it
             end_day_and_start_next()
         out.append(
             {
@@ -317,15 +319,17 @@ def build_sequence(
         if next_break_idx < len(targets):
             target = targets[next_break_idx]
             if t > target:
-                # Catch-up break if we've drifted past the target
+                # Catch-up break – only insert if lesson still fits in today after the break
                 if first_lesson_scheduled_today:
-                    append_block("break", 10)
+                    if t + timedelta(minutes=10 + total) <= end_td:
+                        append_block("break", 10)
                     next_break_idx += 1
             elif t + timedelta(minutes=total) > target:
                 dist_before = abs((t - target).total_seconds())
                 dist_after = abs(((t + timedelta(minutes=total)) - target).total_seconds())
                 if dist_before <= dist_after and first_lesson_scheduled_today:
-                    append_block("break", 10)
+                    if t + timedelta(minutes=10 + total) <= end_td:
+                        append_block("break", 10)
                     next_break_idx += 1
 
         # If the lesson itself won't fit, push to next day
