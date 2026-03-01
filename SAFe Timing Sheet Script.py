@@ -163,16 +163,16 @@ def parse_deck(path: Path, deck_label: str) -> List[Tuple[str, int, int, str]]:
         return sum(1 for i in range(start, end) if is_video_slide(titles[i]))
 
     def adjusted_row(name, start, end):
-        """Return (name, slide_count, activity_mins, kind, slide_start, acts_per_slide) with video slides contributing 1 min each."""
+        """Return (name, slide_count, activity_mins, kind, slide_start, acts_per_slide) with video slides contributing 2 mins each."""
         vid = count_video(start, end)
         count = max(0, end - start) - vid
-        act = sum_activity(start, end) + vid  # 1 min per video slide replaces mins_per_slide
+        act = sum_activity(start, end) + vid * 2  # 2 mins per video slide replaces mins_per_slide
         # Build per-counted-slide activity list; video mins accumulate to the next counted slide
         acts: List[int] = []
         pending_vid = 0
         for i in range(start, end):
             if is_video_slide(titles[i]):
-                pending_vid += 1
+                pending_vid += 2
             else:
                 slide_act = pending_vid
                 pending_vid = 0
