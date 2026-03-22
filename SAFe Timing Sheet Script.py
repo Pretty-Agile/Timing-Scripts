@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Pretty Agile — SAFe Timing v4.5
+Pretty Agile — SAFe Timing v4.6
+- Interactive configuration on each run (skip with --no-config):
+    · Day timing: 9:00-18:00, 8:30-18:00, or custom start time
+      (lunch set 4 h after start; breaks auto-derived hourly)
+    · Lesson balancing: weighted (natural overflow), even (modules split
+      across N days), or custom (MODULE:DAY pin pairs, e.g. 7:4)
 - Hard daily cut-off: 9:00→18:00 (default); 8:30→18:00 (optional)
 - Visible 'Start of Day' row (0 mins, grey) resets time each day
 - Do NOT skip breaks/lunch: if a Break/Lunch would overflow today, end day and place it first thing next day
@@ -677,7 +682,8 @@ def main():
     ap.add_argument("--input-folder", default="/Users/ecp/Timing-Scripts/decks")
     ap.add_argument("--output", default="TimingSheet.xlsx")
     ap.add_argument("--mins-per-slide", type=float, default=2.0)
-    ap.add_argument("--day-window", choices=["8:30-18:00", "9:00-18:00"], default="9:00-18:00")
+    ap.add_argument("--day-window", choices=["8:30-18:00", "9:00-18:00"], default="9:00-18:00",
+                    help="Pre-set day window (only used with --no-config)")
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-config", action="store_true",
