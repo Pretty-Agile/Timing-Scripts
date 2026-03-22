@@ -15,7 +15,7 @@ pip install python-pptx openpyxl
 python3 "SAFe Timing Sheet Script.py" --input-folder /path/to/pptx/folder
 ```
 
-When the script runs it will prompt you for configuration before generating the Excel file. Press **Enter** to accept defaults, or type your choices. Pass `--no-config` to skip the prompts entirely and rely on CLI flag defaults.
+When the script runs it will prompt you for configuration before generating the Excel file. Press **Enter** to accept defaults. Pass `--no-config` to skip all prompts and use CLI flag defaults.
 
 ### Interactive Configuration
 
@@ -32,19 +32,39 @@ Choice [1]:
 Choosing option 3 asks for a start time (e.g. `08:00`); lunch and hourly breaks are derived automatically.
 
 **2 – Lesson Balancing**
-```
-── Lesson Balancing ──
-  Detected modules: 1, 2, 3, 4, 5, 6, 7
 
-  Distribution mode:
-  1. Weighted – natural overflow by content  [default]
-  2. Even     – split modules as evenly as possible across N days
-  3. Custom   – specify which module starts each day
-Choice [1]:
+First, anchor any modules that must start on a specific day:
 ```
-- **Weighted**: lessons overflow to the next day when the day is full (original behaviour)
-- **Even**: enter a number of days; modules are split as evenly as possible
-- **Custom**: enter `MODULE:DAY` pairs, e.g. `7:4` forces module 7 to start on day 4
+  Anchor any module to a specific day? (e.g. 7:4 pins module 7 to day 4)
+  Press Enter with no input when done.
+  > 7:4
+  >
+```
+
+Then enter the total number of days (defaults to the highest anchored day):
+```
+  Number of days [4]: 4
+```
+
+Finally, choose how the remaining modules are distributed:
+```
+  Distribute remaining modules (1, 2, 3, 4, 5, 6) across days 1–3:
+    1. Weighted – natural content overflow  [default]
+    2. Balanced – equalise total time per day
+  Choice [1]:
+```
+
+- **Weighted**: lessons fill each day by content length until the day ends naturally
+- **Balanced**: finds cut points between modules that equalise total minutes per day; earlier days are slightly favoured when days are unequal; complete modules are never split
+
+The summary confirms what was configured:
+```
+── Summary ──
+  Start time : 09:00
+  Day window : 09:00 – 18:00  (lunch 13:00)
+  Modules 1, 2, 3, 4, 5, 6 → days 1–3  (weighted)
+  Module 7 → day 4  (anchored)
+```
 
 ### Required Argument
 
@@ -65,18 +85,16 @@ Choice [1]:
 
 ### Examples
 
-Basic usage (interactive config):
-```bash
+Basic usage — 4-day class, modules 1–6 weighted across days 1–3, module 7 on day 4:
+```
 python3 "SAFe Timing Sheet Script.py" --input-folder ./decks
+
+  > 7:4          ← anchor module 7 to day 4
+  Number of days [4]: ← press Enter to accept 4
+  Choice [1]:    ← press Enter for Weighted
 ```
 
-4-day class, modules 1–6 spread across days 1–3, module 7 pinned to day 4:
-```
-Choice [1]: 3   ← Custom balancing
-  > 7:4
-```
-
-Non-interactive (CI / scripting):
+Non-interactive (scripting / CI):
 ```bash
 python3 "SAFe Timing Sheet Script.py" \
   --input-folder ./decks \

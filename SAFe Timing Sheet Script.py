@@ -680,35 +680,31 @@ def interactive_config(
     if modules:
         print(f"  Detected modules: {', '.join(modules)}")
 
-    # Step 1: number of days
-    raw = input("\n  Number of days [auto]: ").strip()
-    num_days = int(raw) if raw.isdigit() and int(raw) > 0 else None
-
-    # Step 2: collect day-start assignments (day-centric when num_days known)
+    # Step 1: anchors — ask this first so the user can state what they know
+    print("\n  Anchor any module to a specific day? (e.g. 7:4 pins module 7 to day 4)")
+    print("  Press Enter with no input when done.")
     manual_pins: Dict[str, int] = {}
-    if num_days and num_days > 1:
-        print("\n  Which module starts each day? (press Enter to distribute automatically)")
-        for day_n in range(2, num_days + 1):
-            raw = input(f"    Day {day_n} starts with module [auto]: ").strip()
-            if raw:
-                if raw in modules:
-                    manual_pins[raw] = day_n
-                else:
-                    print(f"    Module '{raw}' not found, skipping.")
+    while True:
+        entry = input("  > ").strip()
+        if not entry:
+            break
+        if ":" in entry:
+            parts = entry.split(":", 1)
+            if parts[1].strip().isdigit():
+                manual_pins[parts[0].strip()] = int(parts[1].strip())
+                continue
+        print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
+
+    # Step 2: number of days — default to highest anchored day if available
+    default_days = max(manual_pins.values()) if manual_pins else None
+    default_hint = str(default_days) if default_days else "auto"
+    raw = input(f"\n  Number of days [{default_hint}]: ").strip()
+    if raw.isdigit() and int(raw) > 0:
+        num_days = int(raw)
+    elif not raw and default_days:
+        num_days = default_days
     else:
-        # Fallback: free-form MODULE:DAY pairs
-        print("\n  Pin any module to a specific day? (e.g. 7:4 means module 7 starts on day 4)")
-        print("  Press Enter with no input when done.")
-        while True:
-            entry = input("  > ").strip()
-            if not entry:
-                break
-            if ":" in entry:
-                parts = entry.split(":", 1)
-                if parts[1].strip().isdigit():
-                    manual_pins[parts[0].strip()] = int(parts[1].strip())
-                    continue
-            print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
+        num_days = None
 
     # Compute total minutes per module for time-balanced distribution
     module_weights: Dict[str, float] = {}
@@ -731,7 +727,7 @@ def interactive_config(
 
     dist_choice = "1"
     if remaining:
-        print(f"\n  Remaining modules ({', '.join(remaining)}) across {remaining_day_range}:")
+        print(f"\n  Distribute remaining modules ({', '.join(remaining)}) across {remaining_day_range}:")
         print("    1. Weighted – natural content overflow  [default]")
         print("    2. Balanced – equalise total time per day")
         dist_choice = input("  Choice [1]: ").strip() or "1"
@@ -761,12 +757,12 @@ def interactive_config(
         if free_mods:
             free_days = (f"days 1\u2013{min(lesson_day_map.values()) - 1}"
                          if lesson_day_map else f"days 1\u2013{num_days or '?'}")
-            dist_label = "weighted" if dist_choice == "1" else "even"
+            dist_label = "weighted" if dist_choice == "1" else "balanced"
             print(f"  Modules {', '.join(free_mods)} \u2192 {free_days}  ({dist_label})")
         for mod in auto_mods:
-            print(f"  Module {mod} \u2192 day {lesson_day_map[mod]}  (even)")
+            print(f"  Module {mod} \u2192 day {lesson_day_map[mod]}  (balanced)")
         for mod in pinned_mods:
-            print(f"  Module {mod} \u2192 day {manual_pins[mod]}  (pinned)")
+            print(f"  Module {mod} \u2192 day {manual_pins[mod]}  (anchored)")
     else:
         print("  Balance    : weighted (natural overflow)")
 
