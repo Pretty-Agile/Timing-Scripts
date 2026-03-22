@@ -403,18 +403,18 @@ def build_sequence(
 
     # ---- Main scheduling loop ----
     i = 0
-    current_module = ""
+    current_deck = ""
     while i < len(rows_by_deck):
         row = rows_by_deck[i]
 
-        # ---- Force day advance when a new module starts (lesson_day_map) ----
+        # ---- Force day advance when a new deck starts (lesson_day_map) ----
         if lesson_day_map:
-            module = row.get("deck_module", "")
-            if module and module != current_module and module in lesson_day_map:
-                target_day = lesson_day_map[module]
+            deck = row.get("Deck", "")
+            if deck and deck != current_deck and deck in lesson_day_map:
+                target_day = lesson_day_map[deck]
                 while day < target_day:
                     end_day_and_start_next()
-            current_module = module
+            current_deck = deck
 
         slides = int(row["Slides"])
         minutes = int(round(slides * mins_per_slide))
@@ -671,17 +671,23 @@ def interactive_config(
 
     # ── Lesson Balancing ────────────────────────────────────────────────────────
     print("\n── Lesson Balancing ──")
-    seen: List[str] = []
+    # Build ordered list of deck labels (always populated, unlike deck_module)
+    deck_order: List[str] = []
     for r in parsed_rows:
-        m = r.get("deck_module", "")
-        if m and m not in seen:
-            seen.append(m)
-    modules = seen
-    if modules:
-        print(f"  Detected modules: {', '.join(modules)}")
+        d = r.get("Deck", "")
+        if d and d not in deck_order:
+            deck_order.append(d)
+    modules = deck_order
 
-    # Step 1: anchors — ask this first so the user can state what they know
-    print("\n  Anchor any module to a specific day? (e.g. 7:4 pins module 7 to day 4)")
+    if deck_order:
+        print("\n  Detected lessons:")
+        for i, d in enumerate(deck_order, 1):
+            print(f"    {i}. {d}")
+
+    # Step 1: anchors — accept positional number (e.g. 7) or full deck label
+    deck_num_map = {str(i): d for i, d in enumerate(deck_order, 1)}
+    print("\n  Anchor any lesson to a specific day?")
+    print("  Use the lesson number from the list above (e.g. 7:4 anchors lesson 7 to day 4)")
     print("  Press Enter with no input when done.")
     manual_pins: Dict[str, int] = {}
     while True:
@@ -690,10 +696,16 @@ def interactive_config(
             break
         if ":" in entry:
             parts = entry.split(":", 1)
-            if parts[1].strip().isdigit():
-                manual_pins[parts[0].strip()] = int(parts[1].strip())
-                continue
-        print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
+            key, day_str = parts[0].strip(), parts[1].strip()
+            if day_str.isdigit():
+                deck_label = deck_num_map.get(key, key)
+                if deck_label in deck_order:
+                    manual_pins[deck_label] = int(day_str)
+                    continue
+                else:
+                    print(f"    '{key}' not found. Use a number from the list above.")
+                    continue
+        print("  Invalid format. Use NUMBER:DAY (e.g. 7:4)")
 
     # Step 2: number of days — default to highest anchored day if available
     default_days = max(manual_pins.values()) if manual_pins else None
@@ -706,12 +718,12 @@ def interactive_config(
     else:
         num_days = None
 
-    # Compute total minutes per module for time-balanced distribution
+    # Compute total minutes per deck for time-balanced distribution
     module_weights: Dict[str, float] = {}
     for r in parsed_rows:
-        m = r.get("deck_module", "")
-        if m:
-            module_weights[m] = (module_weights.get(m, 0.0)
+        d = r.get("Deck", "")
+        if d:
+            module_weights[d] = (module_weights.get(d, 0.0)
                                  + r["Slides"] * mins_per_slide
                                  + r["Activity Minutes"])
 
@@ -725,9 +737,13 @@ def interactive_config(
     else:
         remaining_day_range = "available days"
 
+    # Build reverse map for display: deck label → lesson number string
+    label_to_num = {d: str(i) for i, d in enumerate(deck_order, 1)}
+
     dist_choice = "1"
     if remaining:
-        print(f"\n  Distribute remaining modules ({', '.join(remaining)}) across {remaining_day_range}:")
+        remaining_nums = ", ".join(label_to_num.get(m, m) for m in remaining)
+        print(f"\n  Distribute remaining lessons ({remaining_nums}) across {remaining_day_range}:")
         print("    1. Weighted – natural content overflow  [default]")
         print("    2. Balanced – equalise total time per day")
         dist_choice = input("  Choice [1]: ").strip() or "1"
@@ -758,11 +774,12 @@ def interactive_config(
             free_days = (f"days 1\u2013{min(lesson_day_map.values()) - 1}"
                          if lesson_day_map else f"days 1\u2013{num_days or '?'}")
             dist_label = "weighted" if dist_choice == "1" else "balanced"
-            print(f"  Modules {', '.join(free_mods)} \u2192 {free_days}  ({dist_label})")
+            free_nums = ", ".join(label_to_num.get(m, m) for m in free_mods)
+            print(f"  Lessons {free_nums} \u2192 {free_days}  ({dist_label})")
         for mod in auto_mods:
-            print(f"  Module {mod} \u2192 day {lesson_day_map[mod]}  (balanced)")
+            print(f"  Lesson {label_to_num.get(mod, mod)} \u2192 day {lesson_day_map[mod]}  (balanced)")
         for mod in pinned_mods:
-            print(f"  Module {mod} \u2192 day {manual_pins[mod]}  (anchored)")
+            print(f"  Lesson {label_to_num.get(mod, mod)} \u2192 day {manual_pins[mod]}  (anchored)")
     else:
         print("  Balance    : weighted (natural overflow)")
 
