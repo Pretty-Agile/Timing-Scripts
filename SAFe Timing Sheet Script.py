@@ -563,13 +563,20 @@ def _apply_even_distribution(
     modules: List[str],
     manual_pins: Dict[str, int],
     num_days: int,
+    module_weights: Dict[str, float] = None,
 ) -> Dict[str, int]:
-    """Add even-distribution day boundaries for non-pinned modules.
+    """Add day boundaries for non-pinned modules.
 
-    Splits the ordered module list into segments separated by pinned modules,
-    then distributes each segment's modules evenly across its available days.
-    Returns a complete lesson_day_map containing both manual pins and the
-    computed even-distribution boundaries.
+    When module_weights are supplied, uses time-balanced cuts: finds the
+    module boundary whose cumulative minutes is nearest to each day's target,
+    with two tie-breaking rules:
+      - Complete-module: slightly prefer cutting *after* a module (over target)
+        rather than stopping just short, so no module is left dangling.
+      - Favour-earlier: processes day boundaries in order so earlier days
+        claim their share first; when days are unequal, day 1 is slightly
+        longer rather than the last day.
+
+    Falls back to count-based (ceil division) when no weights are given.
     """
     result = dict(manual_pins)
 
@@ -589,7 +596,31 @@ def _apply_even_distribution(
     for mod_start, day_start, mod_end, day_end in segments:
         seg_mods = modules[mod_start:mod_end]
         seg_days = day_end - day_start
-        if len(seg_mods) > 0 and seg_days > 1:
+        if len(seg_mods) == 0 or seg_days <= 1:
+            continue
+
+        if module_weights:
+            seg_weights = [module_weights.get(m, 1.0) for m in seg_mods]
+            total = sum(seg_weights)
+            prev_cut = -1
+            for day_offset in range(1, seg_days):
+                target_cumul = total * day_offset / seg_days
+                best_idx, best_eff = prev_cut, float("inf")
+                running = 0.0
+                for idx, w in enumerate(seg_weights):
+                    running += w
+                    if idx <= prev_cut:
+                        continue
+                    diff = abs(running - target_cumul)
+                    # Slightly prefer over-target so the current module is
+                    # completed; this also ensures earlier days are favoured
+                    eff = diff if running >= target_cumul else diff + 0.01 * total
+                    if eff < best_eff:
+                        best_eff, best_idx = eff, idx
+                if best_idx + 1 < len(seg_mods):
+                    result[seg_mods[best_idx + 1]] = day_start + day_offset
+                    prev_cut = best_idx
+        else:
             per_day = (len(seg_mods) + seg_days - 1) // seg_days
             for day_offset in range(1, seg_days):
                 idx = day_offset * per_day
@@ -599,7 +630,10 @@ def _apply_even_distribution(
     return result
 
 
-def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def interactive_config(
+    parsed_rows: List[Dict[str, Any]],
+    mins_per_slide: float = 2.0,
+) -> Dict[str, Any]:
     """Prompt the user for timing and lesson-balancing settings.
 
     Returns a dict with keys:
@@ -676,6 +710,15 @@ def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                     continue
             print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
 
+    # Compute total minutes per module for time-balanced distribution
+    module_weights: Dict[str, float] = {}
+    for r in parsed_rows:
+        m = r.get("deck_module", "")
+        if m:
+            module_weights[m] = (module_weights.get(m, 0.0)
+                                 + r["Slides"] * mins_per_slide
+                                 + r["Activity Minutes"])
+
     # Step 3: distribution for remaining modules
     remaining = [m for m in modules if m not in manual_pins]
     pinned_days = sorted(set(manual_pins.values()))
@@ -690,7 +733,7 @@ def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     if remaining:
         print(f"\n  Remaining modules ({', '.join(remaining)}) across {remaining_day_range}:")
         print("    1. Weighted – natural content overflow  [default]")
-        print("    2. Even     – split evenly across available days")
+        print("    2. Balanced – equalise total time per day")
         dist_choice = input("  Choice [1]: ").strip() or "1"
 
     if dist_choice == "2":
@@ -701,7 +744,9 @@ def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                     num_days = int(raw)
                     break
                 print("  Please enter a positive integer.")
-        lesson_day_map = _apply_even_distribution(modules, manual_pins, num_days)
+        lesson_day_map = _apply_even_distribution(
+            modules, manual_pins, num_days, module_weights=module_weights
+        )
     else:
         lesson_day_map = manual_pins
 
@@ -840,7 +885,7 @@ def main():
     cfg_break_targets = None
     lesson_day_map: Dict[str, int] = {}
     if not args.no_config:
-        cfg = interactive_config(parsed_rows)
+        cfg = interactive_config(parsed_rows, mins_per_slide=args.mins_per_slide)
         day_start    = cfg["day_start"]
         day_end      = cfg["day_end"]
         lunch_time   = cfg["lunch_time"]
