@@ -404,17 +404,27 @@ def build_sequence(
     # ---- Main scheduling loop ----
     i = 0
     current_deck = ""
+    current_sl_key = ""
     while i < len(rows_by_deck):
         row = rows_by_deck[i]
 
-        # ---- Force day advance when a new deck starts (lesson_day_map) ----
+        # ---- Force day advance when a new deck/sub-lesson starts (lesson_day_map) ----
         if lesson_day_map:
             deck = row.get("Deck", "")
+            sublesson = row.get("Sub-lesson", "")
+            sl_key = f"{deck}||{sublesson}" if deck and sublesson else ""
+            # Deck-level anchor (e.g. lesson 7 → day 4) takes priority
             if deck and deck != current_deck and deck in lesson_day_map:
                 target_day = lesson_day_map[deck]
                 while day < target_day:
                     end_day_and_start_next()
+            # Sub-lesson level cut (balanced distribution)
+            elif sl_key and sl_key != current_sl_key and sl_key in lesson_day_map:
+                target_day = lesson_day_map[sl_key]
+                while day < target_day:
+                    end_day_and_start_next()
             current_deck = deck
+            current_sl_key = sl_key
 
         slides = int(row["Slides"])
         minutes = int(round(slides * mins_per_slide))
@@ -564,21 +574,48 @@ def _apply_even_distribution(
     manual_pins: Dict[str, int],
     num_days: int,
     module_weights: Dict[str, float] = None,
+    sublesson_list: List[Tuple[str, str]] = None,
+    sublesson_weights: Dict[Tuple[str, str], float] = None,
 ) -> Dict[str, int]:
     """Add day boundaries for non-pinned modules.
 
-    When module_weights are supplied, uses time-balanced cuts: finds the
-    module boundary whose cumulative minutes is nearest to each day's target,
-    with two tie-breaking rules:
-      - Complete-module: slightly prefer cutting *after* a module (over target)
-        rather than stopping just short, so no module is left dangling.
-      - Favour-earlier: processes day boundaries in order so earlier days
-        claim their share first; when days are unequal, day 1 is slightly
-        longer rather than the last day.
+    When sublesson_list/sublesson_weights are supplied, cuts at sub-lesson
+    granularity: finds the sub-lesson boundary nearest to each day's target
+    cumulative time. Composite keys 'deck||sublesson' are used in the result.
+
+    When only module_weights are supplied (legacy path), cuts at deck
+    granularity using the same nearest-target algorithm.
 
     Falls back to count-based (ceil division) when no weights are given.
     """
     result = dict(manual_pins)
+
+    # ---- Sub-lesson granularity path ----------------------------------------
+    if sublesson_list:
+        free_sls = [(d, s) for d, s in sublesson_list if d not in manual_pins]
+        target_days = (min(manual_pins.values()) - 1) if manual_pins else num_days
+        if not free_sls or target_days <= 1:
+            return result
+        weights = [sublesson_weights.get((d, s), 1.0) for d, s in free_sls]
+        total = sum(weights)
+        prev_cut = -1
+        for day_offset in range(1, target_days):
+            target_cumul = total * day_offset / target_days
+            best_idx, best_eff = prev_cut, float("inf")
+            running = 0.0
+            for idx, w in enumerate(weights):
+                running += w
+                if idx <= prev_cut:
+                    continue
+                diff = abs(running - target_cumul)
+                eff = diff if running >= target_cumul else diff + 0.01 * total
+                if eff < best_eff:
+                    best_eff, best_idx = eff, idx
+            if best_idx + 1 < len(free_sls):
+                next_d, next_s = free_sls[best_idx + 1]
+                result[f"{next_d}||{next_s}"] = day_offset + 1
+                prev_cut = best_idx
+        return result
 
     pin_by_idx = sorted(
         [(modules.index(m), d) for m, d in manual_pins.items() if m in modules],
@@ -718,14 +755,18 @@ def interactive_config(
     else:
         num_days = None
 
-    # Compute total minutes per deck for time-balanced distribution
-    module_weights: Dict[str, float] = {}
+    # Build ordered sub-lesson list and per-sub-lesson weights
+    sublesson_list: List[Tuple[str, str]] = []
+    sublesson_weights_map: Dict[Tuple[str, str], float] = {}
     for r in parsed_rows:
-        d = r.get("Deck", "")
-        if d:
-            module_weights[d] = (module_weights.get(d, 0.0)
-                                 + r["Slides"] * mins_per_slide
-                                 + r["Activity Minutes"])
+        d, s = r.get("Deck", ""), r.get("Sub-lesson", "")
+        if d and s:
+            key = (d, s)
+            if key not in sublesson_weights_map:
+                sublesson_list.append(key)
+            sublesson_weights_map[key] = (sublesson_weights_map.get(key, 0.0)
+                                          + r["Slides"] * mins_per_slide
+                                          + r["Activity Minutes"])
 
     # Step 3: distribution for remaining modules
     remaining = [m for m in modules if m not in manual_pins]
@@ -757,7 +798,9 @@ def interactive_config(
                     break
                 print("  Please enter a positive integer.")
         lesson_day_map = _apply_even_distribution(
-            modules, manual_pins, num_days, module_weights=module_weights
+            modules, manual_pins, num_days,
+            sublesson_list=sublesson_list,
+            sublesson_weights=sublesson_weights_map,
         )
     else:
         lesson_day_map = manual_pins
