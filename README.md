@@ -6,7 +6,7 @@ SAFe timing python scripts
 Install the required Python packages:
 
 ```bash
-pip install pandas python-pptx openpyxl
+pip install python-pptx openpyxl
 ```
 
 ## Usage
@@ -14,6 +14,37 @@ pip install pandas python-pptx openpyxl
 ```bash
 python3 "SAFe Timing Sheet Script.py" --input-folder /path/to/pptx/folder
 ```
+
+When the script runs it will prompt you for configuration before generating the Excel file. Press **Enter** to accept defaults, or type your choices. Pass `--no-config` to skip the prompts entirely and rely on CLI flag defaults.
+
+### Interactive Configuration
+
+Each run shows a two-step configuration prompt:
+
+**1 – Day Timing**
+```
+── Day Timing ──
+  1. 9:00 – 18:00  (lunch 13:00)  [default]
+  2. 8:30 – 18:00  (lunch 12:30)
+  3. Custom start time
+Choice [1]:
+```
+Choosing option 3 asks for a start time (e.g. `08:00`); lunch and hourly breaks are derived automatically.
+
+**2 – Lesson Balancing**
+```
+── Lesson Balancing ──
+  Detected modules: 1, 2, 3, 4, 5, 6, 7
+
+  Distribution mode:
+  1. Weighted – natural overflow by content  [default]
+  2. Even     – split modules as evenly as possible across N days
+  3. Custom   – specify which module starts each day
+Choice [1]:
+```
+- **Weighted**: lessons overflow to the next day when the day is full (original behaviour)
+- **Even**: enter a number of days; modules are split as evenly as possible
+- **Custom**: enter `MODULE:DAY` pairs, e.g. `7:4` forces module 7 to start on day 4
 
 ### Required Argument
 
@@ -27,30 +58,31 @@ python3 "SAFe Timing Sheet Script.py" --input-folder /path/to/pptx/folder
 |---|---|---|
 | `--output` | `TimingSheet.xlsx` | Output Excel file name/path |
 | `--mins-per-slide` | `2.0` | Minutes allocated per slide |
-| `--day-window` | `8:30-17:30` | Day window: `8:30-17:30` or `9:00-18:00` |
+| `--day-window` | `9:00-18:00` | Pre-set day window (`8:30-18:00` or `9:00-18:00`) — only used with `--no-config` |
+| `--no-config` | *(flag)* | Skip interactive prompts and use CLI flag defaults |
 | `--no-open` | *(flag)* | Skip auto-opening the file on macOS |
 | `--verbose` | *(flag)* | Enable verbose output |
 
 ### Examples
 
-Basic usage:
+Basic usage (interactive config):
 ```bash
 python3 "SAFe Timing Sheet Script.py" --input-folder ./decks
 ```
 
-With a 9:00–18:00 day window and custom output file:
+4-day class, modules 1–6 spread across days 1–3, module 7 pinned to day 4:
+```
+Choice [1]: 3   ← Custom balancing
+  > 7:4
+```
+
+Non-interactive (CI / scripting):
 ```bash
 python3 "SAFe Timing Sheet Script.py" \
   --input-folder ./decks \
   --output MyTiming.xlsx \
-  --day-window 9:00-18:00
-```
-
-With a custom slide duration:
-```bash
-python3 "SAFe Timing Sheet Script.py" \
-  --input-folder ./decks \
-  --mins-per-slide 2.5
+  --day-window 9:00-18:00 \
+  --no-config
 ```
 
 ## Output
