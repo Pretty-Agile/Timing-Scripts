@@ -650,35 +650,46 @@ def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     raw = input("\n  Number of days [auto]: ").strip()
     num_days = int(raw) if raw.isdigit() and int(raw) > 0 else None
 
-    # Step 2: manual pins
-    print("\n  Pin any module to a specific day? (e.g. 7:4 means module 7 starts on day 4)")
-    print("  Press Enter with no input when done.")
+    # Step 2: collect day-start assignments (day-centric when num_days known)
     manual_pins: Dict[str, int] = {}
-    while True:
-        entry = input("  > ").strip()
-        if not entry:
-            break
-        if ":" in entry:
-            parts = entry.split(":", 1)
-            if parts[1].strip().isdigit():
-                manual_pins[parts[0].strip()] = int(parts[1].strip())
-                continue
-        print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
+    if num_days and num_days > 1:
+        print("\n  Which module starts each day? (press Enter to distribute automatically)")
+        for day_n in range(2, num_days + 1):
+            raw = input(f"    Day {day_n} starts with module [auto]: ").strip()
+            if raw:
+                if raw in modules:
+                    manual_pins[raw] = day_n
+                else:
+                    print(f"    Module '{raw}' not found, skipping.")
+    else:
+        # Fallback: free-form MODULE:DAY pairs
+        print("\n  Pin any module to a specific day? (e.g. 7:4 means module 7 starts on day 4)")
+        print("  Press Enter with no input when done.")
+        while True:
+            entry = input("  > ").strip()
+            if not entry:
+                break
+            if ":" in entry:
+                parts = entry.split(":", 1)
+                if parts[1].strip().isdigit():
+                    manual_pins[parts[0].strip()] = int(parts[1].strip())
+                    continue
+            print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
 
     # Step 3: distribution for remaining modules
     remaining = [m for m in modules if m not in manual_pins]
     pinned_days = sorted(set(manual_pins.values()))
-    if pinned_days:
-        remaining_day_range = f"days 1–{min(pinned_days) - 1}" if min(pinned_days) > 1 else "day 1"
+    if pinned_days and min(pinned_days) > 1:
+        remaining_day_range = f"days 1\u2013{min(pinned_days) - 1}"
     elif num_days:
-        remaining_day_range = f"days 1–{num_days}"
+        remaining_day_range = f"days 1\u2013{num_days}"
     else:
         remaining_day_range = "available days"
 
     dist_choice = "1"
     if remaining:
-        print(f"\n  Distribute remaining modules ({', '.join(remaining)}) across {remaining_day_range}:")
-        print("    1. Weighted – natural overflow by content  [default]")
+        print(f"\n  Remaining modules ({', '.join(remaining)}) across {remaining_day_range}:")
+        print("    1. Weighted – natural content overflow  [default]")
         print("    2. Even     – split evenly across available days")
         dist_choice = input("  Choice [1]: ").strip() or "1"
 
@@ -698,10 +709,19 @@ def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     print("\n── Summary ──")
     print(f"  Start time : {day_start}")
     print(f"  Day window : {day_start} – {day_end}  (lunch {lunch_time})")
-    if lesson_day_map:
-        for mod, tgt_day in sorted(lesson_day_map.items(), key=lambda x: x[1]):
-            source = "pinned" if mod in manual_pins else "even"
-            print(f"  Module {mod}   → day {tgt_day}  ({source})")
+    if lesson_day_map or manual_pins:
+        pinned_mods = [m for m in modules if m in manual_pins]
+        auto_mods   = [m for m in modules if m not in manual_pins and m in lesson_day_map]
+        free_mods   = [m for m in modules if m not in lesson_day_map]
+        if free_mods:
+            free_days = (f"days 1\u2013{min(lesson_day_map.values()) - 1}"
+                         if lesson_day_map else f"days 1\u2013{num_days or '?'}")
+            dist_label = "weighted" if dist_choice == "1" else "even"
+            print(f"  Modules {', '.join(free_mods)} \u2192 {free_days}  ({dist_label})")
+        for mod in auto_mods:
+            print(f"  Module {mod} \u2192 day {lesson_day_map[mod]}  (even)")
+        for mod in pinned_mods:
+            print(f"  Module {mod} \u2192 day {manual_pins[mod]}  (pinned)")
     else:
         print("  Balance    : weighted (natural overflow)")
 
