@@ -608,7 +608,7 @@ def _apply_even_distribution(
                 if idx <= prev_cut:
                     continue
                 diff = abs(running - target_cumul)
-                eff = diff if running >= target_cumul else diff + 0.01 * total
+                eff = diff if running >= target_cumul else diff + 0.02 * total
                 if eff < best_eff:
                     best_eff, best_idx = eff, idx
             if best_idx + 1 < len(free_sls):
