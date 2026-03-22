@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """
-Pretty Agile — SAFe Timing v4.5
+Pretty Agile — SAFe Timing v4.6
+- Interactive configuration on each run (skip with --no-config):
+    · Day timing: 9:00-18:00, 8:30-18:00, or custom start time
+      (lunch set 4 h after start; breaks auto-derived hourly)
+    · Lesson balancing: weighted (natural overflow), even (modules split
+      across N days), or custom (MODULE:DAY pin pairs, e.g. 7:4)
 - Hard daily cut-off: 9:00→18:00 (default); 8:30→18:00 (optional)
 - Visible 'Start of Day' row (0 mins, grey) resets time each day
 - Do NOT skip breaks/lunch: if a Break/Lunch would overflow today, end day and place it first thing next day
@@ -229,6 +234,32 @@ def fixed_break_targets(day_window: str) -> List[timedelta]:
             timedelta(hours=17, minutes=0),
         ]
 
+def compute_lunch_time(start_str: str) -> str:
+    """Return a lunch time string 4 hours after start (HH:MM)."""
+    lunch = parse_hhmm(start_str) + timedelta(hours=4)
+    total_mins = int(lunch.total_seconds() // 60)
+    return f"{total_mins // 60:02d}:{total_mins % 60:02d}"
+
+
+def compute_break_targets(start_str: str, end_str: str, lunch_str: str) -> List[timedelta]:
+    """Compute hourly break targets for a custom day window.
+
+    Generates one break per hour starting at start+1h up to end, excluding
+    the lunch slot and the hour immediately after lunch.
+    """
+    start = parse_hhmm(start_str)
+    end = parse_hhmm(end_str)
+    lunch = parse_hhmm(lunch_str)
+    post_lunch = lunch + timedelta(hours=1)
+    targets: List[timedelta] = []
+    t = start + timedelta(hours=1)
+    while t < end:
+        if t != lunch and t != post_lunch:
+            targets.append(t)
+        t += timedelta(hours=1)
+    return targets
+
+
 # ---------- sequence with hard cut-off ----------
 def build_sequence(
     rows_by_deck: List[Dict[str, Any]],
@@ -237,6 +268,8 @@ def build_sequence(
     lunch_time: str,
     day_window: str,
     mins_per_slide: float,
+    lesson_day_map: Dict[str, int] = None,
+    break_targets: List[timedelta] = None,
 ) -> List[Dict[str, Any]]:
     """
     Returns ordered rows (lessons + Start of Day + breaks + lunch + final close),
@@ -255,7 +288,7 @@ def build_sequence(
     end_td = parse_hhmm(day_end)
     lunch_td = parse_hhmm(lunch_time)
     lunch_earliest = lunch_td - timedelta(minutes=15)
-    targets = fixed_break_targets(day_window)
+    targets = break_targets if break_targets is not None else fixed_break_targets(day_window)
 
     # Make a mutable copy so we can replace rows in-place during splits
     rows_by_deck = list(rows_by_deck)
@@ -370,8 +403,19 @@ def build_sequence(
 
     # ---- Main scheduling loop ----
     i = 0
+    current_module = ""
     while i < len(rows_by_deck):
         row = rows_by_deck[i]
+
+        # ---- Force day advance when a new module starts (lesson_day_map) ----
+        if lesson_day_map:
+            module = row.get("deck_module", "")
+            if module and module != current_module and module in lesson_day_map:
+                target_day = lesson_day_map[module]
+                while day < target_day:
+                    end_day_and_start_next()
+            current_module = module
+
         slides = int(row["Slides"])
         minutes = int(round(slides * mins_per_slide))
         activity_mins = int(row["Activity Minutes"])
@@ -514,6 +558,118 @@ def build_sequence(
 
     return out
 
+# ---------- interactive configuration ----------
+def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Prompt the user for timing and lesson-balancing settings.
+
+    Returns a dict with keys:
+        day_start, day_end, lunch_time, day_window, break_targets, lesson_day_map
+    """
+    print("\n=== SAFe Timing Sheet Configuration ===\n")
+
+    # ── Day Timing ──────────────────────────────────────────────────────────────
+    print("── Day Timing ──")
+    print("  1. 9:00 – 18:00  (lunch 13:00)  [default]")
+    print("  2. 8:30 – 18:00  (lunch 12:30)")
+    print("  3. Custom start time")
+    timing_choice = input("Choice [1]: ").strip() or "1"
+
+    if timing_choice == "2":
+        day_start, day_end, lunch_time = "08:30", "18:00", "12:30"
+        day_window = "8:30-18:00"
+        cfg_break_targets = None  # use fixed_break_targets
+    elif timing_choice == "3":
+        while True:
+            raw = input("Start time (HH:MM) [09:00]: ").strip() or "09:00"
+            if re.match(r'^\d{1,2}:\d{2}$', raw):
+                h, m = raw.split(":")
+                day_start = f"{int(h):02d}:{m}"
+                break
+            print("  Please enter time as HH:MM (e.g. 08:00)")
+        day_end = "18:00"
+        lunch_time = compute_lunch_time(day_start)
+        day_window = "custom"
+        cfg_break_targets = compute_break_targets(day_start, day_end, lunch_time)
+    else:
+        day_start, day_end, lunch_time = "09:00", "18:00", "13:00"
+        day_window = "9:00-18:00"
+        cfg_break_targets = None
+
+    # ── Lesson Balancing ────────────────────────────────────────────────────────
+    print("\n── Lesson Balancing ──")
+    seen: List[str] = []
+    for r in parsed_rows:
+        m = r.get("deck_module", "")
+        if m and m not in seen:
+            seen.append(m)
+    modules = seen
+    if modules:
+        print(f"  Detected modules: {', '.join(modules)}")
+
+    print("\n  Distribution mode:")
+    print("  1. Weighted – natural overflow by content  [default]")
+    print("  2. Even     – split modules as evenly as possible across N days")
+    print("  3. Custom   – specify which module starts each day")
+    bal_choice = input("Choice [1]: ").strip() or "1"
+
+    lesson_day_map: Dict[str, int] = {}
+
+    if bal_choice == "2":
+        while True:
+            raw = input("Number of days: ").strip()
+            if raw.isdigit() and int(raw) > 0:
+                num_days = int(raw)
+                break
+            print("  Please enter a positive integer.")
+        n = len(modules)
+        per_day = (n + num_days - 1) // num_days  # ceil division
+        for day_idx in range(1, num_days):
+            start_mod_idx = day_idx * per_day
+            if start_mod_idx < n:
+                lesson_day_map[modules[start_mod_idx]] = day_idx + 1
+
+    elif bal_choice == "3":
+        print("\n  Enter module:day pairs (e.g. 7:4 means module 7 starts on day 4).")
+        print("  Press Enter with no input when done.")
+        while True:
+            entry = input("  > ").strip()
+            if not entry:
+                break
+            if ":" in entry:
+                parts = entry.split(":", 1)
+                if parts[1].strip().isdigit():
+                    lesson_day_map[parts[0].strip()] = int(parts[1].strip())
+                    continue
+            print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
+
+    # ── Summary ─────────────────────────────────────────────────────────────────
+    print("\n── Summary ──")
+    print(f"  Start time : {day_start}")
+    print(f"  Day window : {day_start} – {day_end}  (lunch {lunch_time})")
+    if lesson_day_map:
+        for mod, tgt_day in sorted(lesson_day_map.items(), key=lambda x: x[1]):
+            print(f"  Module {mod}   → forced to day {tgt_day}")
+    else:
+        print("  Balance    : weighted (natural overflow)")
+
+    while True:
+        proceed = input("\nProceed? [y]: ").strip().lower() or "y"
+        if proceed in ("y", "yes"):
+            break
+        elif proceed in ("n", "no"):
+            print("Aborted.")
+            sys.exit(0)
+
+    return {
+        "day_start": day_start,
+        "day_end": day_end,
+        "lunch_time": lunch_time,
+        "day_window": day_window,
+        "break_targets": cfg_break_targets,
+        "lesson_day_map": lesson_day_map,
+    }
+
+
 # ---------- parallel helper (top-level so it's picklable) ----------
 def _parse_deck_task(args):
     path_str, deck_label = args
@@ -526,9 +682,12 @@ def main():
     ap.add_argument("--input-folder", default="/Users/ecp/Timing-Scripts/decks")
     ap.add_argument("--output", default="TimingSheet.xlsx")
     ap.add_argument("--mins-per-slide", type=float, default=2.0)
-    ap.add_argument("--day-window", choices=["8:30-18:00", "9:00-18:00"], default="9:00-18:00")
+    ap.add_argument("--day-window", choices=["8:30-18:00", "9:00-18:00"], default="9:00-18:00",
+                    help="Pre-set day window (only used with --no-config)")
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--no-config", action="store_true",
+                    help="Skip interactive prompts and use CLI flag defaults")
     args = ap.parse_args()
 
     if args.day_window == "8:30-18:00":
@@ -604,6 +763,18 @@ def main():
 
     parsed_rows.sort(key=lambda r: (r["Deck"], subcode(r["Sub-lesson"]), r["Sub-lesson"]))
 
+    # Interactive configuration (unless suppressed)
+    cfg_break_targets = None
+    lesson_day_map: Dict[str, int] = {}
+    if not args.no_config:
+        cfg = interactive_config(parsed_rows)
+        day_start    = cfg["day_start"]
+        day_end      = cfg["day_end"]
+        lunch_time   = cfg["lunch_time"]
+        args.day_window = cfg["day_window"]
+        cfg_break_targets = cfg["break_targets"]
+        lesson_day_map    = cfg["lesson_day_map"]
+
     # Build sequence with hard cut-offs
     sequence = build_sequence(
         parsed_rows,
@@ -612,6 +783,8 @@ def main():
         lunch_time,
         args.day_window,
         mins_per_slide=args.mins_per_slide,
+        lesson_day_map=lesson_day_map,
+        break_targets=cfg_break_targets,
     )
 
     out_path = Path(args.output).expanduser().resolve()
