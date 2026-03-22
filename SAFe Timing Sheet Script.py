@@ -559,6 +559,46 @@ def build_sequence(
     return out
 
 # ---------- interactive configuration ----------
+def _apply_even_distribution(
+    modules: List[str],
+    manual_pins: Dict[str, int],
+    num_days: int,
+) -> Dict[str, int]:
+    """Add even-distribution day boundaries for non-pinned modules.
+
+    Splits the ordered module list into segments separated by pinned modules,
+    then distributes each segment's modules evenly across its available days.
+    Returns a complete lesson_day_map containing both manual pins and the
+    computed even-distribution boundaries.
+    """
+    result = dict(manual_pins)
+
+    pin_by_idx = sorted(
+        [(modules.index(m), d) for m, d in manual_pins.items() if m in modules],
+        key=lambda x: x[1],
+    )
+    prev_mod_idx, prev_day = 0, 1
+    segments = []
+    for pin_mod_idx, pin_day in pin_by_idx:
+        if pin_mod_idx > prev_mod_idx:
+            segments.append((prev_mod_idx, prev_day, pin_mod_idx, pin_day))
+        prev_mod_idx, prev_day = pin_mod_idx + 1, pin_day + 1
+    if prev_mod_idx < len(modules):
+        segments.append((prev_mod_idx, prev_day, len(modules), num_days + 1))
+
+    for mod_start, day_start, mod_end, day_end in segments:
+        seg_mods = modules[mod_start:mod_end]
+        seg_days = day_end - day_start
+        if len(seg_mods) > 0 and seg_days > 1:
+            per_day = (len(seg_mods) + seg_days - 1) // seg_days
+            for day_offset in range(1, seg_days):
+                idx = day_offset * per_day
+                if idx < len(seg_mods):
+                    result[seg_mods[idx]] = day_start + day_offset
+
+    return result
+
+
 def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Prompt the user for timing and lesson-balancing settings.
 
@@ -606,41 +646,53 @@ def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     if modules:
         print(f"  Detected modules: {', '.join(modules)}")
 
-    print("\n  Distribution mode:")
-    print("  1. Weighted – natural overflow by content  [default]")
-    print("  2. Even     – split modules as evenly as possible across N days")
-    print("  3. Custom   – specify which module starts each day")
-    bal_choice = input("Choice [1]: ").strip() or "1"
+    # Step 1: number of days
+    raw = input("\n  Number of days [auto]: ").strip()
+    num_days = int(raw) if raw.isdigit() and int(raw) > 0 else None
 
-    lesson_day_map: Dict[str, int] = {}
+    # Step 2: manual pins
+    print("\n  Pin any module to a specific day? (e.g. 7:4 means module 7 starts on day 4)")
+    print("  Press Enter with no input when done.")
+    manual_pins: Dict[str, int] = {}
+    while True:
+        entry = input("  > ").strip()
+        if not entry:
+            break
+        if ":" in entry:
+            parts = entry.split(":", 1)
+            if parts[1].strip().isdigit():
+                manual_pins[parts[0].strip()] = int(parts[1].strip())
+                continue
+        print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
 
-    if bal_choice == "2":
-        while True:
-            raw = input("Number of days: ").strip()
-            if raw.isdigit() and int(raw) > 0:
-                num_days = int(raw)
-                break
-            print("  Please enter a positive integer.")
-        n = len(modules)
-        per_day = (n + num_days - 1) // num_days  # ceil division
-        for day_idx in range(1, num_days):
-            start_mod_idx = day_idx * per_day
-            if start_mod_idx < n:
-                lesson_day_map[modules[start_mod_idx]] = day_idx + 1
+    # Step 3: distribution for remaining modules
+    remaining = [m for m in modules if m not in manual_pins]
+    pinned_days = sorted(set(manual_pins.values()))
+    if pinned_days:
+        remaining_day_range = f"days 1–{min(pinned_days) - 1}" if min(pinned_days) > 1 else "day 1"
+    elif num_days:
+        remaining_day_range = f"days 1–{num_days}"
+    else:
+        remaining_day_range = "available days"
 
-    elif bal_choice == "3":
-        print("\n  Enter module:day pairs (e.g. 7:4 means module 7 starts on day 4).")
-        print("  Press Enter with no input when done.")
-        while True:
-            entry = input("  > ").strip()
-            if not entry:
-                break
-            if ":" in entry:
-                parts = entry.split(":", 1)
-                if parts[1].strip().isdigit():
-                    lesson_day_map[parts[0].strip()] = int(parts[1].strip())
-                    continue
-            print("  Invalid format. Use MODULE:DAY (e.g. 7:4)")
+    dist_choice = "1"
+    if remaining:
+        print(f"\n  Distribute remaining modules ({', '.join(remaining)}) across {remaining_day_range}:")
+        print("    1. Weighted – natural overflow by content  [default]")
+        print("    2. Even     – split evenly across available days")
+        dist_choice = input("  Choice [1]: ").strip() or "1"
+
+    if dist_choice == "2":
+        if num_days is None:
+            while True:
+                raw = input("  Number of days: ").strip()
+                if raw.isdigit() and int(raw) > 0:
+                    num_days = int(raw)
+                    break
+                print("  Please enter a positive integer.")
+        lesson_day_map = _apply_even_distribution(modules, manual_pins, num_days)
+    else:
+        lesson_day_map = manual_pins
 
     # ── Summary ─────────────────────────────────────────────────────────────────
     print("\n── Summary ──")
@@ -648,7 +700,8 @@ def interactive_config(parsed_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     print(f"  Day window : {day_start} – {day_end}  (lunch {lunch_time})")
     if lesson_day_map:
         for mod, tgt_day in sorted(lesson_day_map.items(), key=lambda x: x[1]):
-            print(f"  Module {mod}   → forced to day {tgt_day}")
+            source = "pinned" if mod in manual_pins else "even"
+            print(f"  Module {mod}   → day {tgt_day}  ({source})")
     else:
         print("  Balance    : weighted (natural overflow)")
 
