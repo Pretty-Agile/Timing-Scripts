@@ -260,6 +260,32 @@ def compute_break_targets(start_str: str, end_str: str, lunch_str: str) -> List[
     return targets
 
 
+def round_up_quarter(td: timedelta) -> timedelta:
+    """Round a timedelta up to the next :00/:15/:30/:45 boundary."""
+    total_minutes = int(td.total_seconds() // 60)
+    remainder = total_minutes % 15
+    if remainder == 0:
+        return timedelta(minutes=total_minutes)
+    return timedelta(minutes=total_minutes + (15 - remainder))
+
+
+def compute_in_person_break_targets(
+    start_str: str, lunch_str: str, end_str: str, lunch_duration_mins: int = 45
+) -> List[timedelta]:
+    """Compute two in-person break targets.
+
+    Morning break: midpoint between start and lunch, rounded up to nearest quarter-hour.
+    Afternoon break: midpoint between lunch-end and day-end, rounded up to nearest quarter-hour.
+    """
+    start = parse_hhmm(start_str)
+    lunch = parse_hhmm(lunch_str)
+    end = parse_hhmm(end_str)
+    lunch_end = lunch + timedelta(minutes=lunch_duration_mins)
+    morning_mid = start + (lunch - start) / 2
+    afternoon_mid = lunch_end + (end - lunch_end) / 2
+    return [round_up_quarter(morning_mid), round_up_quarter(afternoon_mid)]
+
+
 # ---------- sequence with hard cut-off ----------
 def build_sequence(
     rows_by_deck: List[Dict[str, Any]],
@@ -270,6 +296,7 @@ def build_sequence(
     mins_per_slide: float,
     lesson_day_map: Dict[str, int] = None,
     break_targets: List[timedelta] = None,
+    break_duration_mins: int = 10,
 ) -> List[Dict[str, Any]]:
     """
     Returns ordered rows (lessons + Start of Day + breaks + lunch + final close),
@@ -333,12 +360,13 @@ def build_sequence(
 
     def skip_post_lunch_break():
         nonlocal next_break_idx
-        skip_target = (
-            timedelta(hours=13, minutes=30) if day_window == "8:30-18:00"
-            else timedelta(hours=14, minutes=0)
-        )
-        if next_break_idx < len(targets) and targets[next_break_idx] == skip_target:
-            next_break_idx += 1
+        # Skip the first break target that falls within 1 hour of lunch start.
+        # For online mode this drops the "hour after lunch" break; for in-person
+        # the afternoon break is placed ≥2 h after lunch so it is never skipped.
+        if next_break_idx < len(targets):
+            t_next = targets[next_break_idx]
+            if lunch_td <= t_next <= lunch_td + timedelta(hours=1):
+                next_break_idx += 1
 
     def make_slide_ref(row: Dict, slides_before: int) -> str:
         """Return 'module.NN' for the first slide of the second half (1-indexed in deck)."""
@@ -436,8 +464,8 @@ def build_sequence(
         while (next_break_idx < len(targets)
                and t > targets[next_break_idx] + BREAK_WINDOW):
             if first_lesson_scheduled_today:
-                if t + timedelta(minutes=10 + total) <= end_td:
-                    append_block("break", 10)
+                if t + timedelta(minutes=break_duration_mins + total) <= end_td:
+                    append_block("break", break_duration_mins)
             next_break_idx += 1
 
         # ---- Lunch catch-up: past the window, fire before this lesson ----
@@ -482,8 +510,8 @@ def build_sequence(
             if abs(t - target) <= BREAK_WINDOW:
                 # Lesson start within ±5 min of target → BREAK BEFORE
                 if first_lesson_scheduled_today:
-                    if t + timedelta(minutes=10 + total) <= end_td:
-                        append_block("break", 10)
+                    if t + timedelta(minutes=break_duration_mins + total) <= end_td:
+                        append_block("break", break_duration_mins)
                 next_break_idx += 1
             elif t < target and lesson_end > target + BREAK_WINDOW:
                 # Target falls well inside the lesson → SPLIT
@@ -492,7 +520,7 @@ def build_sequence(
                     slides_1, slides_2 = split
                     ref = make_slide_ref(row, slides_1)
                     append_first_half(row, slides_1, sum(acts_per_slide[:slides_1]), ref)
-                    append_block("break", 10)
+                    append_block("break", break_duration_mins)
                     next_break_idx += 1
                     rows_by_deck[i] = make_second_half_row(row, slides_1, slides_2, ref, acts_per_slide[slides_1:])
                     continue
@@ -502,8 +530,8 @@ def build_sequence(
                     if time_to_target <= activity_mins:
                         # All activity fills time before target → fire BEFORE
                         if first_lesson_scheduled_today:
-                            if t + timedelta(minutes=10 + total) <= end_td:
-                                append_block("break", 10)
+                            if t + timedelta(minutes=break_duration_mins + total) <= end_td:
+                                append_block("break", break_duration_mins)
                         next_break_idx += 1
                     # else slides_2==0 → caught by BREAK AFTER below
 
@@ -552,8 +580,8 @@ def build_sequence(
         if next_break_idx < len(targets):
             target = targets[next_break_idx]
             if t >= target - BREAK_WINDOW and t <= target + BREAK_WINDOW:
-                if t + timedelta(minutes=10) <= end_td:
-                    append_block("break", 10)
+                if t + timedelta(minutes=break_duration_mins) <= end_td:
+                    append_block("break", break_duration_mins)
                 next_break_idx += 1
 
         i += 1
@@ -678,8 +706,20 @@ def interactive_config(
     """
     print("\n=== SAFe Timing Sheet Configuration ===\n")
 
+    # ── Training Mode ────────────────────────────────────────────────────────────
+    print("── Training Mode ──")
+    print("  1. Online      (10-min breaks every hour)           [default]")
+    print("  2. In-Person   (15-min morning + afternoon breaks)")
+    mode_choice = input("Choice [1]: ").strip() or "1"
+    if mode_choice == "2":
+        mode = "in-person"
+        break_duration_mins = 15
+    else:
+        mode = "online"
+        break_duration_mins = 10
+
     # ── Day Timing ──────────────────────────────────────────────────────────────
-    print("── Day Timing ──")
+    print("\n── Day Timing ──")
     print("  1. 9:00 – 18:00  (lunch 13:00)  [default]")
     print("  2. 8:30 – 18:00  (lunch 12:30)")
     print("  3. Custom start time")
@@ -705,6 +745,10 @@ def interactive_config(
         day_start, day_end, lunch_time = "09:00", "18:00", "13:00"
         day_window = "9:00-18:00"
         cfg_break_targets = None
+
+    # Override break targets for in-person mode
+    if mode == "in-person":
+        cfg_break_targets = compute_in_person_break_targets(day_start, lunch_time, day_end)
 
     # ── Lesson Balancing ────────────────────────────────────────────────────────
     print("\n── Lesson Balancing ──")
@@ -841,6 +885,8 @@ def interactive_config(
         "day_window": day_window,
         "break_targets": cfg_break_targets,
         "lesson_day_map": lesson_day_map,
+        "mode": mode,
+        "break_duration_mins": break_duration_mins,
     }
 
 
@@ -858,6 +904,9 @@ def main():
     ap.add_argument("--mins-per-slide", type=float, default=2.0)
     ap.add_argument("--day-window", choices=["8:30-18:00", "9:00-18:00"], default="9:00-18:00",
                     help="Pre-set day window (only used with --no-config)")
+    ap.add_argument("--mode", choices=["online", "in-person"], default="online",
+                    help="Break pattern: online (10-min/hour) or in-person (15-min morning+afternoon). "
+                         "Only used with --no-config; interactive mode prompts for this.")
     ap.add_argument("--no-open", action="store_true")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--no-config", action="store_true",
@@ -939,15 +988,21 @@ def main():
 
     # Interactive configuration (unless suppressed)
     cfg_break_targets = None
+    break_duration_mins = 10
     lesson_day_map: Dict[str, int] = {}
     if not args.no_config:
         cfg = interactive_config(parsed_rows, mins_per_slide=args.mins_per_slide)
-        day_start    = cfg["day_start"]
-        day_end      = cfg["day_end"]
-        lunch_time   = cfg["lunch_time"]
-        args.day_window = cfg["day_window"]
-        cfg_break_targets = cfg["break_targets"]
-        lesson_day_map    = cfg["lesson_day_map"]
+        day_start          = cfg["day_start"]
+        day_end            = cfg["day_end"]
+        lunch_time         = cfg["lunch_time"]
+        args.day_window    = cfg["day_window"]
+        cfg_break_targets  = cfg["break_targets"]
+        lesson_day_map     = cfg["lesson_day_map"]
+        break_duration_mins = cfg["break_duration_mins"]
+    else:
+        if args.mode == "in-person":
+            cfg_break_targets = compute_in_person_break_targets(day_start, lunch_time, day_end)
+            break_duration_mins = 15
 
     # Build sequence with hard cut-offs
     sequence = build_sequence(
@@ -959,6 +1014,7 @@ def main():
         mins_per_slide=args.mins_per_slide,
         lesson_day_map=lesson_day_map,
         break_targets=cfg_break_targets,
+        break_duration_mins=break_duration_mins,
     )
 
     out_path = Path(args.output).expanduser().resolve()
