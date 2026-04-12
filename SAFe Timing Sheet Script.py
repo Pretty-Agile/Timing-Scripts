@@ -270,20 +270,18 @@ def round_up_quarter(td: timedelta) -> timedelta:
 
 
 def compute_in_person_break_targets(
-    start_str: str, lunch_str: str, end_str: str, lunch_duration_mins: int = 45
+    start_str: str, lunch_str: str = None, end_str: str = None, lunch_duration_mins: int = 45
 ) -> List[timedelta]:
     """Compute two in-person break targets.
 
-    Morning break: midpoint between start and lunch, rounded up to nearest quarter-hour.
-    Afternoon break: midpoint between lunch-end and day-end, rounded up to nearest quarter-hour.
+    Morning break:   start + 1h 45m  (e.g. 09:00 → 10:45, 08:30 → 10:15)
+    Afternoon break: start + 6h 45m  (e.g. 09:00 → 15:45, 08:30 → 15:15)
     """
     start = parse_hhmm(start_str)
-    lunch = parse_hhmm(lunch_str)
-    end = parse_hhmm(end_str)
-    lunch_end = lunch + timedelta(minutes=lunch_duration_mins)
-    morning_mid = start + (lunch - start) / 2
-    afternoon_mid = lunch_end + (end - lunch_end) / 2
-    return [round_up_quarter(morning_mid), round_up_quarter(afternoon_mid)]
+    return [
+        start + timedelta(hours=1, minutes=45),
+        start + timedelta(hours=6, minutes=45),
+    ]
 
 
 # ---------- sequence with hard cut-off ----------
