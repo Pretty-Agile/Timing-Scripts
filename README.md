@@ -19,9 +19,19 @@ When the script runs it will prompt you for configuration before generating the 
 
 ### Interactive Configuration
 
-Each run shows a two-step configuration prompt:
+Each run shows a three-step configuration prompt:
 
-**1 – Day Timing**
+**1 – Training Mode**
+```
+── Training Mode ──
+  1. Online      (10-min breaks every hour)           [default]
+  2. In-Person   (15-min morning + afternoon breaks)
+Choice [1]:
+```
+- **Online**: 10-minute break every hour throughout the day
+- **In-Person**: two 15-minute breaks — morning at start + 1h45m, afternoon at start + 6h45m (e.g. 10:45 & 15:45 for a 9:00 start)
+
+**2 – Day Timing**
 ```
 ── Day Timing ──
   1. 9:00 – 18:00  (lunch 13:00)  [default]
@@ -31,7 +41,7 @@ Choice [1]:
 ```
 Choosing option 3 asks for a start time (e.g. `08:00`); lunch and hourly breaks are derived automatically.
 
-**2 – Lesson Balancing**
+**3 – Lesson Balancing**
 
 First, anchor any modules that must start on a specific day:
 ```
@@ -79,6 +89,7 @@ The summary confirms what was configured:
 | `--output` | `TimingSheet.xlsx` | Output Excel file name/path |
 | `--mins-per-slide` | `2.0` | Minutes allocated per slide |
 | `--day-window` | `9:00-18:00` | Pre-set day window (`8:30-18:00` or `9:00-18:00`) — only used with `--no-config` |
+| `--mode` | `online` | Break pattern: `online` (10-min/hour) or `in-person` (15-min morning+afternoon) — only used with `--no-config` |
 | `--no-config` | *(flag)* | Skip interactive prompts and use CLI flag defaults |
 | `--no-open` | *(flag)* | Skip auto-opening the file on macOS |
 | `--verbose` | *(flag)* | Enable verbose output |
@@ -100,6 +111,14 @@ python3 "SAFe Timing Sheet Script.py" \
   --input-folder ./decks \
   --output MyTiming.xlsx \
   --day-window 9:00-18:00 \
+  --no-config
+
+# In-person mode:
+python3 "SAFe Timing Sheet Script.py" \
+  --input-folder ./decks \
+  --output MyTiming.xlsx \
+  --day-window 9:00-18:00 \
+  --mode in-person \
   --no-config
 ```
 
