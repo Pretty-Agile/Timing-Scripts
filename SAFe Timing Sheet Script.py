@@ -897,7 +897,7 @@ def _parse_deck_task(args):
 # ---------- runner ----------
 def main():
     ap = argparse.ArgumentParser(description="SAFe timing → Excel with hard cut-offs and start-of-day rows.")
-    ap.add_argument("--input-folder", default="/Users/ecp/Timing-Scripts/decks")
+    ap.add_argument("--input-folder", default=str(Path(__file__).resolve().parent / "decks"))
     ap.add_argument("--output", default="TimingSheet.xlsx")
     ap.add_argument("--mins-per-slide", type=float, default=2.0)
     ap.add_argument("--day-window", choices=["8:30-18:00", "9:00-18:00"], default="9:00-18:00",
